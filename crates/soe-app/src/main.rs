@@ -36,8 +36,10 @@ struct App {
     last_tick: Instant,
     cursor: (f64, f64),
     map: Option<IndexedFrame>,
+    panel: Option<soe_video::PlanarImage>,
     map_mode: bool,
     status_mode: bool,
+    paused: bool,
 }
 
 impl App {
@@ -46,6 +48,7 @@ impl App {
         scene_ids: Vec<u16>,
         scene_index: usize,
         map: Option<IndexedFrame>,
+        panel: Option<soe_video::PlanarImage>,
         start_map: bool,
         start_status: bool,
     ) -> Self {
@@ -60,8 +63,10 @@ impl App {
             last_tick: Instant::now(),
             cursor: (0.0, 0.0),
             map,
+            panel,
             map_mode: start_map,
             status_mode: start_status,
+            paused: false,
         }
     }
 
@@ -85,7 +90,9 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.status_mode {
+        let mode = if self.paused {
+            "PAUSED".to_string()
+        } else if self.status_mode {
             "STATUS".to_string()
         } else if self.map_mode {
             "MAP".to_string()
@@ -129,6 +136,17 @@ impl App {
         if self.status_mode {
             let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
             draw_status(&mut copy, &self.session);
+            display = Some(copy);
+        }
+        if self.paused {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            if let Some(font) = self.session.font() {
+                if let Some(panel) = self.panel.as_ref() {
+                    draw_panel(&mut copy, panel, 0, 72, 320, 56);
+                }
+                font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", Some(0));
+                font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", Some(0));
+            }
             display = Some(copy);
         }
 
@@ -247,6 +265,10 @@ impl ApplicationHandler for App {
                         self.status_mode = !self.status_mode;
                         self.update_title();
                     }
+                    PhysicalKey::Code(KeyCode::KeyP) => {
+                        self.paused = !self.paused;
+                        self.update_title();
+                    }
                     _ => {}
                 }
             }
@@ -258,7 +280,7 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        if self.session.animation_count() > 0 {
+        if self.session.animation_count() > 0 && !self.paused {
             self.animation_accum += delta;
             while self.animation_accum >= TICK {
                 self.session.advance_animation_frame();
@@ -272,6 +294,150 @@ impl ApplicationHandler for App {
             Instant::now() + Duration::from_millis(16),
         ));
     }
+}
+
+fn blit_scaled(
+    frame: &mut IndexedFrame,
+    src: &soe_video::PlanarImage,
+    sx: i32,
+    sy: i32,
+    sw: i32,
+    sh: i32,
+    dx: i32,
+    dy: i32,
+    dw: i32,
+    dh: i32,
+) {
+    if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 {
+        return;
+    }
+    let src_w = i32::from(src.width);
+    for y in 0..dh {
+        let syy = sy + y * sh / dh;
+        if !(0..i32::from(src.height)).contains(&syy) {
+            continue;
+        }
+        for x in 0..dw {
+            let sxx = sx + x * sw / dw;
+            if !(0..src_w).contains(&sxx) {
+                continue;
+            }
+            let pixel = src.indices[(syy * src_w + sxx) as usize];
+            frame.set_pixel((dx + x) as u16, (dy + y) as u16, pixel);
+        }
+    }
+}
+
+fn draw_panel(
+    frame: &mut IndexedFrame,
+    src: &soe_video::PlanarImage,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) {
+    let corner = 16
+        .min(i32::from(src.width) / 2)
+        .min(i32::from(src.height) / 2);
+    let sw = i32::from(src.width);
+    let sh = i32::from(src.height);
+    blit_scaled(
+        frame,
+        src,
+        corner,
+        corner,
+        sw - 2 * corner,
+        sh - 2 * corner,
+        x + corner,
+        y + corner,
+        width - 2 * corner,
+        height - 2 * corner,
+    );
+    blit_scaled(frame, src, 0, 0, corner, corner, x, y, corner, corner);
+    blit_scaled(
+        frame,
+        src,
+        sw - corner,
+        0,
+        corner,
+        corner,
+        x + width - corner,
+        y,
+        corner,
+        corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        0,
+        sh - corner,
+        corner,
+        corner,
+        x,
+        y + height - corner,
+        corner,
+        corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        sw - corner,
+        sh - corner,
+        corner,
+        corner,
+        x + width - corner,
+        y + height - corner,
+        corner,
+        corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        corner,
+        0,
+        sw - 2 * corner,
+        corner,
+        x + corner,
+        y,
+        width - 2 * corner,
+        corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        corner,
+        sh - corner,
+        sw - 2 * corner,
+        corner,
+        x + corner,
+        y + height - corner,
+        width - 2 * corner,
+        corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        0,
+        corner,
+        corner,
+        sh - 2 * corner,
+        x,
+        y + corner,
+        corner,
+        height - 2 * corner,
+    );
+    blit_scaled(
+        frame,
+        src,
+        sw - corner,
+        corner,
+        corner,
+        sh - 2 * corner,
+        x + width - corner,
+        y + corner,
+        corner,
+        height - 2 * corner,
+    );
 }
 
 fn draw_status(frame: &mut IndexedFrame, session: &Session) {
@@ -395,10 +561,21 @@ fn main() -> Result<()> {
         .unwrap_or(0);
     let session = Session::load(&game_dir, &exe, scene_ids[start])?;
     let map = load_map(&game_dir, &session.palettes().room)?;
+    let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(session, scene_ids, start, map, start_map, start_status);
+    let paused = args.iter().any(|arg| arg == "--paused");
+    let mut app = App::new(
+        session,
+        scene_ids,
+        start,
+        map,
+        panel,
+        start_map,
+        start_status,
+    );
+    app.paused = paused;
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }

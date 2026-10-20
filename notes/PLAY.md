@@ -34,6 +34,7 @@ The process needs the original game files; they remain git-ignored.
 | R | reset animations to frame 0 |
 | I | toggle the Round Table/items status screen |
 | M | toggle the world-map screen |
+| P | pause / close the pause panel |
 | Esc | quit |
 
 Startup flags:
@@ -42,6 +43,7 @@ Startup flags:
 --scene N   start at scene id N
 --map       start in map view
 --status    start in status view
+--paused    start with the pause panel open
 ```
 
 Animations advance at the BIOS tick rate (18.2 Hz) and every scene is clipped
