@@ -680,7 +680,11 @@ fn main() -> Result<()> {
         .and_then(|id| scene_ids.iter().position(|candidate| *candidate == id))
         .or_else(|| scene_ids.iter().position(|id| *id == 5))
         .unwrap_or(0);
-    let session = Session::load(&game_dir, &exe, scene_ids[start])?;
+    let save_name = args
+        .windows(2)
+        .find(|pair| pair[0] == "--save")
+        .map_or("EPISODE1.DAT", |pair| pair[1].as_str());
+    let session = Session::load_save(&game_dir, &exe, scene_ids[start], save_name)?;
     let map = load_map(&game_dir, &session.palettes().room)?;
     let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
     let story = HintBook::load(game_dir.join("HINT.RES")).ok();

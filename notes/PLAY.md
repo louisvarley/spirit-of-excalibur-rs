@@ -46,6 +46,7 @@ Startup flags:
 --status    start in status view
 --story     start in the story/hint chronicle
 --paused    start with the pause panel open
+--save FILE load a specific .sav instead of EPISODE1.DAT
 ```
 
 Animations advance at the BIOS tick rate (18.2 Hz) and every scene is clipped
