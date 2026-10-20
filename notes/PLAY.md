@@ -34,6 +34,7 @@ The process needs the original game files; they remain git-ignored.
 | R | reset animations to frame 0 |
 | I | toggle the Round Table/items status screen |
 | M | toggle the world-map screen |
+| H | open the story/hint chronicle (arrows/click page, H closes) |
 | P | pause / close the pause panel |
 | Esc | quit |
 
@@ -43,6 +44,7 @@ Startup flags:
 --scene N   start at scene id N
 --map       start in map view
 --status    start in status view
+--story     start in the story/hint chronicle
 --paused    start with the pause panel open
 ```
 

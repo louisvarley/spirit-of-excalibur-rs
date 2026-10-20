@@ -98,6 +98,15 @@ impl BitmapFont {
         })
     }
 
+    /// Advance width of a string in logical pixels.
+    #[must_use]
+    pub fn text_width(&self, text: &str) -> u32 {
+        text.bytes()
+            .filter_map(|code| self.glyph(code))
+            .map(|glyph| glyph.advance(self.spacing).max(0) as u32)
+            .sum()
+    }
+
     /// Draw text at a logical position. Palette index 0 is transparent; when
     /// `color` is set, every non-zero glyph pixel uses that index.
     pub fn draw_text(

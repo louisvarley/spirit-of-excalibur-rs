@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use soe_assets::Palette;
 use soe_engine::session::Session;
+use soe_engine::story::HintBook;
 use soe_video::{IndexedFrame, decode_planar};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -37,9 +38,12 @@ struct App {
     cursor: (f64, f64),
     map: Option<IndexedFrame>,
     panel: Option<soe_video::PlanarImage>,
+    story: Option<HintBook>,
     map_mode: bool,
     status_mode: bool,
+    story_mode: bool,
     paused: bool,
+    story_page: usize,
 }
 
 impl App {
@@ -49,8 +53,10 @@ impl App {
         scene_index: usize,
         map: Option<IndexedFrame>,
         panel: Option<soe_video::PlanarImage>,
+        story: Option<HintBook>,
         start_map: bool,
         start_status: bool,
+        start_story: bool,
     ) -> Self {
         Self {
             window: None,
@@ -64,9 +70,12 @@ impl App {
             cursor: (0.0, 0.0),
             map,
             panel,
+            story,
             map_mode: start_map,
             status_mode: start_status,
+            story_mode: start_story,
             paused: false,
+            story_page: 0,
         }
     }
 
@@ -90,7 +99,9 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.paused {
+        let mode = if self.story_mode {
+            "CHRONICLE".to_string()
+        } else if self.paused {
             "PAUSED".to_string()
         } else if self.status_mode {
             "STATUS".to_string()
@@ -105,7 +116,7 @@ impl App {
             )
         };
         window.set_title(&format!(
-            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  Space frame  Esc quit"
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  H chronicle  P pause  Space frame  Esc quit"
         ));
     }
 
@@ -147,6 +158,17 @@ impl App {
                 font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", Some(0));
                 font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", Some(0));
             }
+            display = Some(copy);
+        }
+        if self.story_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_story(
+                &mut copy,
+                &self.session,
+                self.story.as_ref(),
+                self.panel.as_ref(),
+                self.story_page,
+            );
             display = Some(copy);
         }
 
@@ -239,12 +261,38 @@ impl ApplicationHandler for App {
                     .window
                     .as_ref()
                     .map_or(1.0, |window| f64::from(window.inner_size().width));
-                self.change_scene(if self.cursor.0 >= width / 2.0 { 1 } else { -1 });
+                if self.story_mode {
+                    if self.cursor.0 >= width / 2.0 {
+                        self.story_page = self.story_page.wrapping_add(1);
+                    } else {
+                        self.story_page = self.story_page.saturating_sub(1);
+                    }
+                } else {
+                    self.change_scene(if self.cursor.0 >= width / 2.0 { 1 } else { -1 });
+                }
             }
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                if self.story_mode {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                        PhysicalKey::Code(KeyCode::KeyH) => {
+                            self.story_mode = false;
+                            self.update_title();
+                        }
+                        PhysicalKey::Code(KeyCode::Space)
+                        | PhysicalKey::Code(KeyCode::ArrowRight) => {
+                            self.story_page = self.story_page.wrapping_add(1);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                            self.story_page = self.story_page.saturating_sub(1);
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 match event.physical_key {
                     PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
                     PhysicalKey::Code(KeyCode::ArrowLeft) => self.change_scene(-1),
@@ -269,6 +317,10 @@ impl ApplicationHandler for App {
                         self.paused = !self.paused;
                         self.update_title();
                     }
+                    PhysicalKey::Code(KeyCode::KeyH) => {
+                        self.story_mode = true;
+                        self.update_title();
+                    }
                     _ => {}
                 }
             }
@@ -280,7 +332,7 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        if self.session.animation_count() > 0 && !self.paused {
+        if self.session.animation_count() > 0 && !self.paused && !self.story_mode {
             self.animation_accum += delta;
             while self.animation_accum >= TICK {
                 self.session.advance_animation_frame();
@@ -294,6 +346,75 @@ impl ApplicationHandler for App {
             Instant::now() + Duration::from_millis(16),
         ));
     }
+}
+
+fn wrap_text(font: &soe_engine::font::BitmapFont, text: &str, max_width: u32) -> Vec<String> {
+    let mut lines = Vec::new();
+    for raw in text.split('\n') {
+        let mut line = String::new();
+        for word in raw.split_whitespace() {
+            let candidate = if line.is_empty() {
+                word.to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if !line.is_empty() && font.text_width(&candidate) > max_width {
+                lines.push(std::mem::take(&mut line));
+                line.push_str(word);
+            } else {
+                line = candidate;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn draw_story(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    story: Option<&HintBook>,
+    panel: Option<&soe_video::PlanarImage>,
+    page: usize,
+) {
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 0, 18, 320, 170);
+    } else {
+        fill_rect(frame, 0, 18, 320, 170, 0);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    let color = if panel.is_some() { 0 } else { 7 };
+    font.draw_text(
+        frame,
+        12,
+        24,
+        "CHRONICLE  H CLOSE  ARROWS PAGE",
+        Some(color),
+    );
+    let Some(story) = story else {
+        font.draw_text(frame, 12, 42, "NO HINT DATA", Some(color));
+        return;
+    };
+    if story.is_empty() {
+        font.draw_text(frame, 12, 42, "NO HINT DATA", Some(color));
+        return;
+    }
+    let index = page % story.paragraphs.len();
+    let lines = wrap_text(font, &story.paragraphs[index], 292);
+    for (line, text) in lines.iter().take(12).enumerate() {
+        font.draw_text(frame, 12, 42 + line as i32 * 10, text, Some(color));
+    }
+    font.draw_text(
+        frame,
+        270,
+        174,
+        &format!("{}/{}", index + 1, story.paragraphs.len()),
+        Some(color),
+    );
 }
 
 fn blit_scaled(
@@ -562,6 +683,8 @@ fn main() -> Result<()> {
     let session = Session::load(&game_dir, &exe, scene_ids[start])?;
     let map = load_map(&game_dir, &session.palettes().room)?;
     let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
+    let story = HintBook::load(game_dir.join("HINT.RES")).ok();
+    let start_story = args.iter().any(|arg| arg == "--story");
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
@@ -572,8 +695,10 @@ fn main() -> Result<()> {
         start,
         map,
         panel,
+        story,
         start_map,
         start_status,
+        start_story,
     );
     app.paused = paused;
     event_loop.run_app(&mut app).context("running window")?;
