@@ -1,0 +1,2 @@
+func	entry	addr	byte	text
+FUN_1316_0d87	1316:0d87	1316:0f8c	216	FADD float ptr [BX + DI + 0x63c3]

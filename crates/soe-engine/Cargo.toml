@@ -1,0 +1,15 @@
+[package]
+name = "soe-engine"
+description = "Game logic for the Spirit of Excalibur port (foundation only)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+soe-assets = { path = "../soe-assets" }
+soe-res = { path = "../soe-res" }
+soe-video = { path = "../soe-video" }
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+# original game or derived from it: never commit
+/original/*
+!/original/README.md
+/game/*
+!/game/README.md
+/export/
+/ghidra/*.rep/
+/ghidra/*.gpr
+/ghidra/*.lock*
+/ghidra_backup_*.zip
+/tests/vectors/
+*.EXE
+*.RES
+*.DVR
+*.SAV
+*.DAT
+/out/
+/target/
+/screenshots/
+/*.sav
+/*.SAV
+
+/reference/
+/packs/

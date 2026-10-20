@@ -1,0 +1,23 @@
+[package]
+name = "soe-app"
+description = "Playable Spirit of Excalibur room viewer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.85"
+
+[[bin]]
+name = "soe-play"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+soe-assets = { path = "../soe-assets" }
+soe-engine = { path = "../soe-engine" }
+soe-res = { path = "../soe-res" }
+soe-video = { path = "../soe-video" }
+winit = "0.30"
+softbuffer = "0.4"
+
+[lints]
+workspace = true

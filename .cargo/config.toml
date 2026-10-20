@@ -1,0 +1,3 @@
+[build]
+# Keep developer builds readable; no unsafe code is allowed by workspace lints.
+rustflags = []

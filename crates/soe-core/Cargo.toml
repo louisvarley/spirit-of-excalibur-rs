@@ -1,0 +1,10 @@
+[package]
+name = "soe-core"
+description = "Explicit 16-bit helpers for the Spirit of Excalibur port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true

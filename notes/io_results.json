@@ -1,0 +1,711 @@
+{
+ "summary": {
+  "functions": 461,
+  "int21": 51,
+  "int10": 8,
+  "int33": 1,
+  "ports": 15,
+  "fpu": 1,
+  "opcodes": 1
+ },
+ "int21": [
+  {
+   "func": "entry",
+   "entry": "1000:0000",
+   "addr": "1000:000a",
+   "ah": 48,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "entry",
+   "entry": "1000:0000",
+   "addr": "1000:00b2",
+   "ah": 74,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_010d",
+   "entry": "1000:010d",
+   "addr": "1000:0123",
+   "ah": 76,
+   "al": 4,
+   "ax": 19460,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_012f",
+   "entry": "1000:012f",
+   "addr": "1000:0133",
+   "ah": 53,
+   "al": 0,
+   "ax": 13568,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_012f",
+   "entry": "1000:012f",
+   "addr": "1000:0140",
+   "ah": 53,
+   "al": 4,
+   "ax": 13572,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_012f",
+   "entry": "1000:012f",
+   "addr": "1000:014d",
+   "ah": 53,
+   "al": 5,
+   "ax": 13573,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_012f",
+   "entry": "1000:012f",
+   "addr": "1000:015a",
+   "ah": 53,
+   "al": 6,
+   "ax": 13574,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_012f",
+   "entry": "1000:012f",
+   "addr": "1000:016e",
+   "ah": 37,
+   "al": 0,
+   "ax": 9472,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_0172",
+   "entry": "1000:0172",
+   "addr": "1000:017a",
+   "ah": 37,
+   "al": 0,
+   "ax": 9472,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_0172",
+   "entry": "1000:0172",
+   "addr": "1000:0185",
+   "ah": 37,
+   "al": 4,
+   "ax": 9476,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_0172",
+   "entry": "1000:0172",
+   "addr": "1000:0190",
+   "ah": 37,
+   "al": 5,
+   "ax": 9477,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_0172",
+   "entry": "1000:0172",
+   "addr": "1000:019b",
+   "ah": 37,
+   "al": 6,
+   "ax": 9478,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_1000_01a7",
+   "entry": "1000:01a7",
+   "addr": "1000:01ac",
+   "ah": 64,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_0000",
+   "entry": "307a:0000",
+   "addr": "307a:0029",
+   "ah": 53,
+   "al": 9,
+   "ax": 13577,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_0000",
+   "entry": "307a:0000",
+   "addr": "307a:0042",
+   "ah": 37,
+   "al": 9,
+   "ax": 9481,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_01cf",
+   "entry": "307a:01cf",
+   "addr": "307a:01e5",
+   "ah": 37,
+   "al": 9,
+   "ax": 9481,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:036a",
+   "ah": 9,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:037b",
+   "ah": 9,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:03c9",
+   "ah": 9,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_30f5_0010",
+   "entry": "30f5:0010",
+   "addr": "30f5:0027",
+   "ah": 37,
+   "al": 8,
+   "ax": 9480,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_30f5_004a",
+   "entry": "30f5:004a",
+   "addr": "30f5:0056",
+   "ah": 53,
+   "al": 8,
+   "ax": 13576,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_30f5_004a",
+   "entry": "30f5:004a",
+   "addr": "30f5:0075",
+   "ah": 37,
+   "al": 8,
+   "ax": 9480,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3169_0000",
+   "entry": "3169:0000",
+   "addr": "3169:000b",
+   "ah": 74,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3197_000b",
+   "entry": "3197:000b",
+   "addr": "3197:0017",
+   "ah": 60,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3197_002a",
+   "entry": "3197:002a",
+   "addr": "3197:0036",
+   "ah": 64,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_31b1_000b",
+   "entry": "31b1:000b",
+   "addr": "31b1:0031",
+   "ah": 61,
+   "al": 0,
+   "ax": 15616,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_31f0_0006",
+   "entry": "31f0:0006",
+   "addr": "31f0:0018",
+   "ah": 68,
+   "al": 8,
+   "ax": 17416,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_31f3_0003",
+   "entry": "31f3:0003",
+   "addr": "31f3:000c",
+   "ah": 68,
+   "al": 0,
+   "ax": 17408,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3218_000e",
+   "entry": "3218:000e",
+   "addr": "3218:0019",
+   "ah": 62,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3247_0009",
+   "entry": "3247:0009",
+   "addr": "3247:0018",
+   "ah": 63,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3268_0009",
+   "entry": "3268:0009",
+   "addr": "3268:0037",
+   "ah": 64,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3271_0004",
+   "entry": "3271:0004",
+   "addr": "3271:0020",
+   "ah": 66,
+   "al": 12,
+   "ax": 16908,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_328e_000d",
+   "entry": "328e:000d",
+   "addr": "328e:0016",
+   "ah": 65,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_32a9_0009",
+   "entry": "32a9:0009",
+   "addr": "32a9:0018",
+   "ah": 67,
+   "al": 10,
+   "ax": 17162,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_32ab_000a",
+   "entry": "32ab:000a",
+   "addr": "32ab:0029",
+   "ah": 68,
+   "al": 0,
+   "ax": 17408,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_32ab_000a",
+   "entry": "32ab:000a",
+   "addr": "32ab:0039",
+   "ah": 66,
+   "al": 1,
+   "ax": 16897,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_32ab_000a",
+   "entry": "32ab:000a",
+   "addr": "32ab:0046",
+   "ah": 66,
+   "al": 2,
+   "ax": 16898,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_32ab_000a",
+   "entry": "32ab:000a",
+   "addr": "32ab:0055",
+   "ah": 66,
+   "al": 0,
+   "ax": 16896,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3326_0009",
+   "entry": "3326:0009",
+   "addr": "3326:0019",
+   "ah": 66,
+   "al": 1,
+   "ax": 16897,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3326_0009",
+   "entry": "3326:0009",
+   "addr": "3326:0026",
+   "ah": 66,
+   "al": 2,
+   "ax": 16898,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3326_0009",
+   "entry": "3326:0009",
+   "addr": "3326:0035",
+   "ah": 66,
+   "al": 0,
+   "ax": 16896,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_332f_0031",
+   "entry": "332f:0031",
+   "addr": "332f:0039",
+   "ah": 14,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3333_0001",
+   "entry": "3333:0001",
+   "addr": "3333:000a",
+   "ah": 26,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3333_0001",
+   "entry": "3333:0001",
+   "addr": "3333:0014",
+   "ah": 78,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3333_0027",
+   "entry": "3333:0027",
+   "addr": "3333:0030",
+   "ah": 26,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3333_0027",
+   "entry": "3333:0027",
+   "addr": "3333:0034",
+   "ah": 79,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3337_0028",
+   "entry": "3337:0028",
+   "addr": "3337:0031",
+   "ah": 28,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3337_004c",
+   "entry": "3337:004c",
+   "addr": "3337:0055",
+   "ah": 54,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3360_0000",
+   "entry": "3360:0000",
+   "addr": "3360:000c",
+   "ah": 53,
+   "al": 27,
+   "ax": 13595,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3360_0000",
+   "entry": "3360:0000",
+   "addr": "3360:0017",
+   "ah": 37,
+   "al": 27,
+   "ax": 9499,
+   "text": "INT 0x21"
+  },
+  {
+   "func": "FUN_3360_0000",
+   "entry": "3360:0000",
+   "addr": "3360:0031",
+   "ah": 37,
+   "al": 27,
+   "ax": 9499,
+   "text": "INT 0x21"
+  }
+ ],
+ "int10": [
+  {
+   "func": "FUN_1316_0002",
+   "entry": "1316:0002",
+   "addr": "1316:00b4",
+   "ah": 0,
+   "al": 3,
+   "ax": 3,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_1316_0365",
+   "entry": "1316:0365",
+   "addr": "1316:03a7",
+   "ah": 0,
+   "al": 3,
+   "ax": 3,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_306a_0037",
+   "entry": "306a:0037",
+   "addr": "306a:003a",
+   "ah": 26,
+   "al": 0,
+   "ax": 6656,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_306a_0037",
+   "entry": "306a:0037",
+   "addr": "306a:0050",
+   "ah": 18,
+   "al": 0,
+   "ax": 4608,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:0359",
+   "ah": 0,
+   "al": 4,
+   "ax": 4,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:0363",
+   "ah": 2,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:0374",
+   "ah": 2,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x10"
+  },
+  {
+   "func": "FUN_307a_0353",
+   "entry": "307a:0353",
+   "addr": "307a:03c2",
+   "ah": 2,
+   "al": null,
+   "ax": null,
+   "text": "INT 0x10"
+  }
+ ],
+ "int33": [
+  {
+   "func": "FUN_307a_01ec",
+   "entry": "307a:01ec",
+   "addr": "307a:0243",
+   "ah": 0,
+   "al": 0,
+   "ax": 0,
+   "text": "INT 0x33"
+  }
+ ],
+ "ports": [
+  {
+   "func": "FUN_1316_1302",
+   "entry": "1316:1302",
+   "addr": "1316:1365",
+   "mnem": "IN",
+   "port": 986,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_1316_1302",
+   "entry": "1316:1302",
+   "addr": "1316:136d",
+   "mnem": "IN",
+   "port": 986,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_1316_1302",
+   "entry": "1316:1302",
+   "addr": "1316:13a6",
+   "mnem": "IN",
+   "port": 986,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_1316_1302",
+   "entry": "1316:1302",
+   "addr": "1316:13ae",
+   "mnem": "IN",
+   "port": 986,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_307a_0428",
+   "entry": "307a:0428",
+   "addr": "307a:042e",
+   "mnem": "OUT",
+   "port": 513,
+   "known": true,
+   "text": "OUT DX,AL"
+  },
+  {
+   "func": "FUN_307a_0428",
+   "entry": "307a:0428",
+   "addr": "307a:043d",
+   "mnem": "IN",
+   "port": 513,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_307a_0428",
+   "entry": "307a:0428",
+   "addr": "307a:0456",
+   "mnem": "IN",
+   "port": 513,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_307a_0428",
+   "entry": "307a:0428",
+   "addr": "307a:046f",
+   "mnem": "IN",
+   "port": 513,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_307a_0428",
+   "entry": "307a:0428",
+   "addr": "307a:0489",
+   "mnem": "IN",
+   "port": 513,
+   "known": true,
+   "text": "IN AL,DX"
+  },
+  {
+   "func": "FUN_30f5_0010",
+   "entry": "30f5:0010",
+   "addr": "30f5:003b",
+   "mnem": "OUT",
+   "port": 67,
+   "known": true,
+   "text": "OUT 0x43,AL"
+  },
+  {
+   "func": "FUN_30f5_0010",
+   "entry": "30f5:0010",
+   "addr": "30f5:003f",
+   "mnem": "OUT",
+   "port": 64,
+   "known": true,
+   "text": "OUT 0x40,AL"
+  },
+  {
+   "func": "FUN_30f5_0010",
+   "entry": "30f5:0010",
+   "addr": "30f5:0041",
+   "mnem": "OUT",
+   "port": 64,
+   "known": true,
+   "text": "OUT 0x40,AL"
+  },
+  {
+   "func": "FUN_30f5_004a",
+   "entry": "30f5:004a",
+   "addr": "30f5:007b",
+   "mnem": "OUT",
+   "port": 67,
+   "known": true,
+   "text": "OUT 0x43,AL"
+  },
+  {
+   "func": "FUN_30f5_004a",
+   "entry": "30f5:004a",
+   "addr": "30f5:0080",
+   "mnem": "OUT",
+   "port": 64,
+   "known": true,
+   "text": "OUT 0x40,AL"
+  },
+  {
+   "func": "FUN_30f5_004a",
+   "entry": "30f5:004a",
+   "addr": "30f5:0084",
+   "mnem": "OUT",
+   "port": 64,
+   "known": true,
+   "text": "OUT 0x40,AL"
+  }
+ ],
+ "fpu": [
+  {
+   "func": "FUN_1316_0d87",
+   "entry": "1316:0d87",
+   "addr": "1316:0f8c",
+   "text": "FADD float ptr [BX + DI + 0x63c3]"
+  }
+ ],
+ "opcodes": [
+  {
+   "func": "FUN_1316_0d87",
+   "entry": "1316:0d87",
+   "addr": "1316:0f8c",
+   "byte": 216,
+   "text": "FADD float ptr [BX + DI + 0x63c3]"
+  }
+ ]
+}

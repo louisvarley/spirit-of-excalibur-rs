@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/soe-core",
+    "crates/soe-res",
+    "crates/soe-assets",
+    "crates/soe-video",
+    "crates/soe-tools",
+    "crates/soe-engine",
+    "crates/soe-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

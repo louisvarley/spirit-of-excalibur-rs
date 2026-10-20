@@ -1,0 +1,2 @@
+func	entry	addr	ah	al	ax	text
+FUN_307a_01ec	307a:01ec	307a:0243	0	0	0	INT 0x33

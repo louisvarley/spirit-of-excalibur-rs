@@ -1,0 +1,43 @@
+# SCENES.RES room records
+
+Status: **CONFIRMED** for scene 1 (and consistent with the prior notes).
+
+Container: normal `.RES`, type `SCEN` (`NECS` reversed), 5-dword header,
+payload base `0x14`, 138 records, flags `0x00`.
+
+Record layout:
+
+```
+u8  object_count
+u8  background
+object[object_count] * u32
+u32 trailer          (optional; some records end after the object list)
+```
+
+All 138 records parse; scene 1 has the trailer, others (e.g. a 20-object,
+82-byte record) end at the object list.
+
+Object bits (little-endian u32):
+
+| bits | field |
+|---|---|
+| 0..10 | resource id |
+| 11..19 | stored x + 190 |
+| 20..27 | y |
+| 28..31 | flags (bit 0 = horizontal flip) |
+
+Draw order is file order; index 0 is transparent. `FUN_2b79_0003` passes
+`flags & 1` to the blitter, and `FUN_14b0_0bbf` folds it into bit 7 of the
+sprite control word (`control ^= (flags & 1) << 7`), i.e. horizontal mirroring.
+Bits 1..3 are not consumed by the renderer. Resource ids in the ANI
+ranges (`0x2BC..0x320`, `0x384..0x3E8`) are FRML animations, all others IMAG
+images. The background byte is informational; the object list alone composes
+the room.
+
+Verified scene 1: 16 objects, background 14, trailer `0x2A`; first objects
+`1039@0,0`, `1403@0,100`, `1041@183,32`, `1041@-136,31`, `1041@0,40`,
+`1407@135,32`; object 15 is animation `908`. `soe-engine::scene::Scene` parses
+this and the test checks the vector.
+
+Still unverified: the exact renderer routine address and the MMAP metadata
+records (7 in INTF.RES).
