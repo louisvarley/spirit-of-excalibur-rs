@@ -36,6 +36,7 @@ struct App {
     cursor: (f64, f64),
     map: Option<IndexedFrame>,
     map_mode: bool,
+    status_mode: bool,
 }
 
 impl App {
@@ -45,6 +46,7 @@ impl App {
         scene_index: usize,
         map: Option<IndexedFrame>,
         start_map: bool,
+        start_status: bool,
     ) -> Self {
         Self {
             window: None,
@@ -58,6 +60,7 @@ impl App {
             cursor: (0.0, 0.0),
             map,
             map_mode: start_map,
+            status_mode: start_status,
         }
     }
 
@@ -104,12 +107,25 @@ impl App {
         self.resize(size.width, size.height);
 
         let id = self.session.scene_id;
-        let mut map_copy = if self.map_mode {
+        let mut display = if self.map_mode {
             self.map.clone()
         } else {
             None
         };
-        if let Some(map) = map_copy.as_mut() {
+        if self.status_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_status(&mut copy, &self.session);
+            display = Some(copy);
+        }
+
+        if self.status_mode {
+            if let Some(frame) = display.as_mut() {
+                fill_rect(frame, 0, 0, 320, 13, 0);
+                if let Some(font) = self.session.font() {
+                    font.draw_text(frame, 2, 2, "STATUS  I CLOSE  ESC QUIT", Some(7));
+                }
+            }
+        } else if let Some(map) = display.as_mut() {
             fill_rect(map, 0, 0, 320, 13, 0);
             if let Some(font) = self.session.font() {
                 font.draw_text(
@@ -126,10 +142,11 @@ impl App {
             self.session.draw_text(
                 2,
                 2,
-                &format!("SCENE {id}  M MAP  ARROWS SCENE  SPACE FRAME"),
+                &format!("SCENE {id}  M MAP  I STATUS  R RESET"),
                 Some(7),
             );
-            self.session.draw_text(2, 190, "R RESET  ESC QUIT", Some(7));
+            self.session
+                .draw_text(2, 190, "ARROWS SCENE  SPACE FRAME  ESC QUIT", Some(7));
         }
 
         let Some(surface) = &mut self.surface else {
@@ -140,7 +157,7 @@ impl App {
         };
         let out_w = size.width as usize;
         let out_h = size.height as usize;
-        let src = map_copy.as_ref().unwrap_or(&self.session.frame);
+        let src = display.as_ref().unwrap_or(&self.session.frame);
         let palette = &self.session.palettes().room.colors;
         let sw = usize::from(src.width);
         let sh = usize::from(src.height);
@@ -244,6 +261,9 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyM) => {
                         self.map_mode = !self.map_mode;
                     }
+                    PhysicalKey::Code(KeyCode::KeyI) => {
+                        self.status_mode = !self.status_mode;
+                    }
                     _ => {}
                 }
             }
@@ -268,6 +288,48 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(16),
         ));
+    }
+}
+
+fn draw_status(frame: &mut IndexedFrame, session: &Session) {
+    fill_rect(frame, 10, 18, 300, 168, 0);
+    fill_rect(frame, 10, 18, 300, 1, 7);
+    fill_rect(frame, 10, 185, 300, 1, 7);
+    fill_rect(frame, 10, 18, 1, 168, 7);
+    fill_rect(frame, 309, 18, 1, 168, 7);
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 16, 24, "ROUND TABLE", Some(7));
+    font.draw_text(frame, 16, 38, "KNIGHTS", Some(7));
+    font.draw_text(frame, 170, 38, "ITEMS", Some(7));
+    fill_rect(frame, 16, 48, 286, 1, 7);
+    for (index, character) in session
+        .state
+        .characters
+        .iter()
+        .filter(|character| !character.name().is_empty())
+        .take(12)
+        .enumerate()
+    {
+        let name = character.name().to_ascii_uppercase();
+        font.draw_text(frame, 16, 52 + index as i32 * 10, &name, Some(7));
+    }
+    for (index, item) in session
+        .state
+        .items
+        .iter()
+        .filter(|item| !item.name().is_empty())
+        .take(12)
+        .enumerate()
+    {
+        font.draw_text(
+            frame,
+            170,
+            52 + index as i32 * 10,
+            &item.name().to_ascii_uppercase(),
+            Some(7),
+        );
     }
 }
 
@@ -339,6 +401,7 @@ fn main() -> Result<()> {
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let start_map = args.iter().any(|arg| arg == "--map");
+    let start_status = args.iter().any(|arg| arg == "--status");
     let requested = args
         .windows(2)
         .find(|pair| pair[0] == "--scene")
@@ -352,7 +415,7 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(session, scene_ids, start, map, start_map);
+    let mut app = App::new(session, scene_ids, start, map, start_map, start_status);
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }
