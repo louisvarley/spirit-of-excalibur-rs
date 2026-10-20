@@ -77,14 +77,28 @@ impl App {
         }
         self.scene_index = next;
         self.animation_accum = Duration::ZERO;
-        if let Some(window) = &self.window {
-            window.set_title(&format!(
-                "Spirit of Excalibur - scene {} ({}/{})",
-                id,
-                next + 1,
+        self.update_title();
+    }
+
+    fn update_title(&self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let mode = if self.status_mode {
+            "STATUS".to_string()
+        } else if self.map_mode {
+            "MAP".to_string()
+        } else {
+            format!(
+                "SCENE {} ({}/{})",
+                self.session.scene_id,
+                self.scene_index + 1,
                 self.scene_ids.len()
-            ));
-        }
+            )
+        };
+        window.set_title(&format!(
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  Space frame  Esc quit"
+        ));
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -106,7 +120,6 @@ impl App {
         }
         self.resize(size.width, size.height);
 
-        let id = self.session.scene_id;
         let mut display = if self.map_mode {
             self.map.clone()
         } else {
@@ -116,37 +129,6 @@ impl App {
             let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
             draw_status(&mut copy, &self.session);
             display = Some(copy);
-        }
-
-        if self.status_mode {
-            if let Some(frame) = display.as_mut() {
-                fill_rect(frame, 0, 0, 320, 13, 0);
-                if let Some(font) = self.session.font() {
-                    font.draw_text(frame, 2, 2, "STATUS  I CLOSE  ESC QUIT", Some(7));
-                }
-            }
-        } else if let Some(map) = display.as_mut() {
-            fill_rect(map, 0, 0, 320, 13, 0);
-            if let Some(font) = self.session.font() {
-                font.draw_text(
-                    map,
-                    2,
-                    2,
-                    "MAP  M ROOM  ARROWS SCENE  SPACE FRAME  ESC QUIT",
-                    Some(7),
-                );
-            }
-        } else {
-            fill_rect(&mut self.session.frame, 0, 0, 320, 13, 0);
-            fill_rect(&mut self.session.frame, 0, 188, 320, 12, 0);
-            self.session.draw_text(
-                2,
-                2,
-                &format!("SCENE {id}  M MAP  I STATUS  R RESET"),
-                Some(7),
-            );
-            self.session
-                .draw_text(2, 190, "ARROWS SCENE  SPACE FRAME  ESC QUIT", Some(7));
         }
 
         let Some(surface) = &mut self.surface else {
@@ -180,11 +162,8 @@ impl ApplicationHandler for App {
             return;
         }
         let attributes = Window::default_attributes()
-            .with_title(format!(
-                "Spirit of Excalibur - scene {}",
-                self.session.scene_id
-            ))
-            .with_inner_size(winit::dpi::PhysicalSize::new(960, 600))
+            .with_title("Spirit of Excalibur")
+            .with_inner_size(winit::dpi::PhysicalSize::new(640, 400))
             .with_resizable(true);
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
@@ -214,6 +193,7 @@ impl ApplicationHandler for App {
         self.context = Some(context);
         self.surface = Some(surface);
         self.last_tick = Instant::now();
+        self.update_title();
     }
 
     fn window_event(
@@ -260,9 +240,11 @@ impl ApplicationHandler for App {
                     }
                     PhysicalKey::Code(KeyCode::KeyM) => {
                         self.map_mode = !self.map_mode;
+                        self.update_title();
                     }
                     PhysicalKey::Code(KeyCode::KeyI) => {
                         self.status_mode = !self.status_mode;
+                        self.update_title();
                     }
                     _ => {}
                 }
@@ -300,9 +282,9 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session) {
     let Some(font) = session.font() else {
         return;
     };
-    font.draw_text(frame, 16, 24, "ROUND TABLE", Some(7));
-    font.draw_text(frame, 16, 38, "KNIGHTS", Some(7));
-    font.draw_text(frame, 170, 38, "ITEMS", Some(7));
+    font.draw_text(frame, 16, 24, "ROUND TABLE", Some(8));
+    font.draw_text(frame, 16, 38, "KNIGHTS", Some(8));
+    font.draw_text(frame, 170, 38, "ITEMS", Some(8));
     fill_rect(frame, 16, 48, 286, 1, 7);
     for (index, character) in session
         .state
@@ -313,7 +295,7 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session) {
         .enumerate()
     {
         let name = character.name().to_ascii_uppercase();
-        font.draw_text(frame, 16, 52 + index as i32 * 10, &name, Some(7));
+        font.draw_text(frame, 16, 52 + index as i32 * 10, &name, Some(8));
     }
     for (index, item) in session
         .state
@@ -328,7 +310,7 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session) {
             170,
             52 + index as i32 * 10,
             &item.name().to_ascii_uppercase(),
-            Some(7),
+            Some(8),
         );
     }
 }

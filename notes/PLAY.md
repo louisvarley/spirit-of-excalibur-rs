@@ -46,7 +46,7 @@ Startup flags:
 
 Animations advance at the BIOS tick rate (18.2 Hz) and every scene is clipped
 to the 320x200 logical frame. Presentation is a nearest-neighbour scale to the
-window (default 960x600).
+window (default 640x400).
 
 ## Scope
 
