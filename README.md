@@ -19,8 +19,9 @@ trace vectors.
 | `soe-res` | `.RES` container reader and decompressor trait |
 | `soe-assets` | resource IDs, layered asset sources, override packs |
 | `soe-video` | `Video`, `Upscaler`, indexed reference renderer, scaled presenter |
-| `soe-tools` | developer CLI (`soe res info <file>`) |
-| `soe-engine` | game logic (empty foundation) |
+| `soe-tools` | developer CLI (`soe res info`, image/room/font dump) |
+| `soe-engine` | resource, save, scene, room, font, formatter and session logic |
+| `soe-app` | playable `soe-play` window (rooms, animation, map, status) |
 
 ## Design constraints
 
@@ -36,8 +37,13 @@ See `notes/ARCHITECTURE.md` for rationale and open questions.
 
 ```sh
 cargo test
+cargo run -p soe-app --release
 cargo run -p soe-tools -- res info game/HINT.RES
 ```
+
+`soe-play` controls: arrow keys or click left/right to change room, `M` map,
+`I` status, `Space` step animation, `R` reset animation, `Esc` quit. See
+`notes/PLAY.md`.
 
 Tests that read original files use `SOE_GAME_DIR` (default `game/`). They print
 a skip message and pass when the files are absent.
