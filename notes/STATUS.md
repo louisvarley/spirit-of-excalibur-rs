@@ -67,7 +67,7 @@ Updated: army battle loop (orders, rounds, casualties, return to map).
 
 ## M2 remaining
 
-- OPL2/SMUS audio backend.
+- Per-scene music cues and driver-exact ADLIB instruments.
 - Full DOS INT 21h file semantics.
 
 ## M3 remaining
@@ -84,8 +84,9 @@ Updated: army battle loop (orders, rounds, casualties, return to map).
   Per-scene trigger visibility and some event side effects remain open.
 - Inventory/economy/magic/trade: implemented; exact price bargaining and a few
   object flag bits remain approximate.
-- Combat: headless loop implemented. Encounter-table setup, exact AI target
-  choice, magic absorption and loot drops remain approximate/open.
+- Combat: interactive army battle implemented (`--battle`). Encounter-table
+  setup, exact AI target choice, magic absorption and loot drops remain
+  approximate/open.
 - Audio: SMUS parser + OPL2/cpal map music implemented; per-scene cues and
   driver-exact instruments remain.
 - Packaging: release script and clean distribution folder implemented.
@@ -96,4 +97,4 @@ Updated: army battle loop (orders, rounds, casualties, return to map).
 
 1. Finish per-scene event triggers and remaining dialogue side effects.
 2. Reach the battle from the event/encounter table (the loop itself is ported).
-3. Per-scene audio cues, packaging polish, upscale.
+3. Per-scene audio cues and packaging polish.

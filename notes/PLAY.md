@@ -71,5 +71,6 @@ window (default 640x400).
 The interaction loop is playable: room character selection opens the action
 menu, Talk resolves the event table to a `HINT.RES` line, Give/Drop/Pickup/Use
 move live object instances, and join/plea dialogue records offer choices.
-Combat, per-scene event visibility and driver-exact audio remain open. This is
-not yet a complete game.
+The army battle is playable with orders, rounds, casualties and return to the
+map. Remaining gaps are per-scene event visibility, encounter-table setup,
+exact AI/edge cases, per-scene music cues and driver-exact audio.

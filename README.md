@@ -41,9 +41,10 @@ cargo run -p soe-app --release
 cargo run -p soe-tools -- res info game/HINT.RES
 ```
 
-`soe-play` controls: arrow keys or click to change room/page, `M` map,
-`I` status, `H` story chronicle, `P` pause, `Space` step animation, `R` reset,
-`Esc` quit. See `notes/PLAY.md`.
+`soe-play` controls: arrows/click scene or menu, `M` map, `I` status,
+`A` action menu, `T` travel, `S` saves, `H` story chronicle, `P` pause,
+`F2` mute, `F5`/`F9` quick save/load, `Space` animation step, `Esc` quit.
+See `notes/PLAY.md`.
 
 Tests that read original files use `SOE_GAME_DIR` (default `game/`). They print
 a skip message and pass when the files are absent.
