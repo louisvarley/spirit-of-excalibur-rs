@@ -33,8 +33,16 @@ The MCGA driver also exposes a separate variable-width 1bpp/mask font through
 `drv_2`/`FUN_0000_07b4`; that path is retained in `soe-engine::font::Font` but
 is not used by the message formatter.
 
-Still open: exact handling of the tenth row, colour/OR blit mode 0x46, and
-whether any screens use the driver font rather than the atlas.
+Blit mode (resolved): `14b0:0af9` calls `FUN_14b0_0bbf` with flags `0x46`
+and remap argument 0. `0bbf` clears flag `0x02` (remap) when that argument
+is 0, so glyphs are drawn transparently in their **own atlas colours**
+(indices 2, 3, 4, 6), looked up in whatever palette is active. There is no
+per-call text colour. Upper and lower case share metric words, so the font is
+unicase by design. Line advance is `DS:1E8A` (10), matching `draw_text`.
+
+Still open: exact handling of the tenth row (the blit asks for 10 rows of a
+9-row atlas), and whether any screens use the driver font rather than the
+atlas.
 
 The live atlas in DOSBox-X memory is an 8-bit linear buffer with a 304-byte
 row stride (301 pixels + 3 padding bytes), confirmed from save-state.sav.
