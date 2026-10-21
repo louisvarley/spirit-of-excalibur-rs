@@ -335,7 +335,12 @@ impl App {
         let out_w = size.width as usize;
         let out_h = size.height as usize;
         let src = display.as_ref().unwrap_or(&self.runtime.session().frame);
-        let palette = &self.runtime.session().palettes().room.colors;
+        let session = self.runtime.session();
+        let palette = if matches!(screen, Screen::Map | Screen::Travel) {
+            &session.palettes().room.colors
+        } else {
+            &session.scene_palette().colors
+        };
         let sw = usize::from(src.width);
         let sh = usize::from(src.height);
         for y in 0..out_h {

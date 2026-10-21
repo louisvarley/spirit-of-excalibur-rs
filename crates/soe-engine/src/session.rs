@@ -63,6 +63,8 @@ pub struct Session {
     game_dir: PathBuf,
     resources: ResourceManager,
     palettes: PaletteSet,
+    /// Palette left active by the room renderer for the current scene.
+    scene_palette: Palette,
     pub state: GameState,
     pub scene_id: u16,
     pub scene: Scene,
@@ -83,11 +85,8 @@ impl Session {
         Self {
             game_dir: PathBuf::new(),
             resources: ResourceManager::new(),
-            palettes: PaletteSet {
-                room: Palette::black(),
-                map: Palette::black(),
-                ui: Palette::black(),
-            },
+            palettes: PaletteSet::black(),
+            scene_palette: Palette::black(),
             state,
             scene_id: 0,
             scene: Scene {
@@ -134,16 +133,13 @@ impl Session {
             }
         }
 
-        let palettes = PaletteSet::load(&exe).unwrap_or_else(|_| PaletteSet {
-            room: Palette::black(),
-            map: Palette::black(),
-            ui: Palette::black(),
-        });
+        let palettes = PaletteSet::load(&exe).unwrap_or_else(|_| PaletteSet::black());
         let font = load_font(&mut resources, exe.as_ref());
 
         let mut session = Self {
             game_dir,
             resources,
+            scene_palette: palettes.room.clone(),
             palettes,
             state,
             scene_id,
@@ -202,6 +198,9 @@ impl Session {
             }
         }
 
+        self.scene_palette = self
+            .palettes
+            .scene_palette(scene.objects.iter().map(|object| object.resource_id));
         self.scene = scene;
         self.scene_id = scene_id;
         self.static_images = static_images;
@@ -214,7 +213,7 @@ impl Session {
     /// Re-render the current scene using the current animation frame.
     fn recompose(&mut self) {
         let animation_frame = self.animation_frame;
-        let frame = compose_scene(&self.scene, &self.palettes.room, |id| {
+        let frame = compose_scene(&self.scene, &self.scene_palette, |id| {
             self.static_images.get(&id).cloned().or_else(|| {
                 self.animations
                     .get(&id)
@@ -305,6 +304,12 @@ impl Session {
     #[must_use]
     pub fn palettes(&self) -> &PaletteSet {
         &self.palettes
+    }
+
+    /// Palette for presenting the current room (see `PaletteSet::scene_palette`).
+    #[must_use]
+    pub fn scene_palette(&self) -> &Palette {
+        &self.scene_palette
     }
 
     pub fn resources_mut(&mut self) -> &mut ResourceManager {

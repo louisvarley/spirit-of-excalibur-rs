@@ -168,6 +168,22 @@ copies DS `0x2099`. `0x2039` and `0x2099` are identical 96-byte tables.
 expanded with `v * 17`. Callers: `2d65:0001`, `2b79:0003`, `2b79:0397`,
 `2b79:0aca` write `0x8E5D`; the renderer copies `0x2099`.
 
+**Correction (room palette rules).** `0x2039` and `0x2099` are *not*
+identical (entries 11-13, 15, 17-31 differ). There are 11 tables from
+`DS 0x1F79` to `0x2339`. The room renderer `2b79:0003` copies `0x2099` into
+the buffer `DS 0x9BA0`, then for each drawn scene object (in draw order)
+applies id-based rules at `2b79:094f..0c42`: patch entries 18-21/21/27/31
+from 3-byte colours at `DS 0x2399..0x23E4`, rebuild the buffer from `0x20F9`
+(id `0x47F`), or point `DS:8E5D` at a fixed table (`0x2159`, `0x2219`,
+`0x2279`, `0x22D9`, `0x2339`, `0x21B9`, `0x20F9`). A `first` flag (`[BP-3]`)
+gates some rules. Ported as `PaletteSet::scene_palette`; it gives golden
+thatch (entry 27), grey interiors and night skies. Room blits pass remap
+pointer 0, so `drv_0` flag 0x02 is cleared and no index remap happens.
+Violet water (index 1 = `6,4,A`) and the overcast town skies (backdrop
+art over sky image `0x40F`) come straight from the tables. The MCGA driver
+maps 4-bit to 6-bit with a linear table at `MCGA.DVR:0900`, so `v*17` is
+within 1-2 levels of the hardware output.
+
 ## Scene/ANI status
 
 - Prior `scenes.md`/`ani.md` claims were read. SCENES.RES record schema (room

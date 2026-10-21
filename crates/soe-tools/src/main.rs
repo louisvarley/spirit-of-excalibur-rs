@@ -160,8 +160,19 @@ fn room_compose(scenes: &str, id: &str, resdir: &str, out: &str, frame: usize) -
         }
     }
 
-    let (palette_id, colors) = palette_table("room");
-    let palette = soe_assets::Palette::new(colors);
+    let exe = std::env::var_os("SOE_EXE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("ghidra/EXCAL_UNPACKED.EXE"));
+    let (palette_id, palette) = match soe_engine::palette::PaletteSet::load(&exe) {
+        Ok(set) => (
+            "exe:scene".to_string(),
+            set.scene_palette(scene.objects.iter().map(|object| object.resource_id)),
+        ),
+        Err(_) => {
+            let (id, colors) = palette_table("room");
+            (id, soe_assets::Palette::new(colors))
+        }
+    };
     let frame = soe_engine::room::compose_scene(&scene, &palette, |rid| images.get(&rid).cloned());
 
     let mut pal = vec![0u8; 768];
@@ -185,6 +196,12 @@ fn room_compose(scenes: &str, id: &str, resdir: &str, out: &str, frame: usize) -
         scene.objects.len(),
         images.len()
     );
+    let ids: Vec<String> = scene
+        .objects
+        .iter()
+        .map(|object| object.resource_id.to_string())
+        .collect();
+    println!("objects: {}", ids.join(" "));
     Ok(())
 }
 
