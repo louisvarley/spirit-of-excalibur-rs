@@ -54,11 +54,27 @@ def record(snap: str, ticks: int) -> list[dict]:
             if (m.u16(ss, sp + 2), m.u16(ss, sp)) != (seg18, 0x0784):
                 return
             ws, wo = widget()
+            # The widget FUN_15b8_16ca(0x220, 0, +0x2E) finds (followed or
+            # signalled by handlers 1 and 5).
+            other = None
+            target_id = m.u16(ws, wo + 0x2E)
+            for i in range(m.read(DS, 0x969D, 1)[0]):
+                s, o = m.u16(DS, 0x969F + 4 * i + 2), m.u16(DS, 0x969F + 4 * i)
+                es, eo = m.u16(s, o + 2), m.u16(s, o)
+                if m.u16(es, eo + 0x0A) == target_id and m.u16(es, eo) & 0x220:
+                    other = m.read(es, eo, WIDGET).hex()
+                    break
             stack.append({
+                "other": other,
                 "handler": handler, "arg": m.u16(ss, sp + 4),
                 "before": m.read(ws, wo, WIDGET).hex(), "ptr": (ws, wo),
                 "clock": m.u16(DS, 0x7E3E) | m.u16(DS, 0x7E40) << 16,
                 "word": m.u16(DS, 0x9A76), "rng": [],
+                # The widget's script (far pointer table DS:1E2A by +0x0E),
+                # which the conditional handler reads ahead in.
+                "program": m.read(m.u16(DS, 0x1E2A + 4 * m.read(ws, wo + 0x0E, 1)[0] + 2),
+                                  m.u16(DS, 0x1E2A + 4 * m.read(ws, wo + 0x0E, 1)[0]), 0x200).hex(),
+                "flags_before": m.read(DS, 0x01F5, 1).hex() + m.read(DS, 0x9A78, 1).hex(),
             })
         return h
 
@@ -73,6 +89,7 @@ def record(snap: str, ticks: int) -> list[dict]:
         ws, wo = rec.pop("ptr")
         rec["after"] = m.read(ws, wo, WIDGET).hex()
         rec["ret"] = m.r("ax") & 0xFF
+        rec["flags_after"] = m.read(DS, 0x01F5, 1).hex() + m.read(DS, 0x9A78, 1).hex()
         n = counts.get(rec["handler"], 0)
         if n < PER_HANDLER:
             calls.append(rec)
