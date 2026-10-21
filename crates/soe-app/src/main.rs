@@ -51,6 +51,7 @@ struct App {
     save_mode: bool,
     save_files: Vec<String>,
     save_index: usize,
+    transition_start: Option<Instant>,
 }
 
 impl App {
@@ -93,6 +94,7 @@ impl App {
             save_mode: false,
             save_files,
             save_index: 0,
+            transition_start: None,
         }
     }
 
@@ -109,6 +111,7 @@ impl App {
         }
         self.scene_index = next;
         self.animation_accum = Duration::ZERO;
+        self.transition_start = Some(Instant::now());
         self.update_title();
     }
 
@@ -133,6 +136,7 @@ impl App {
             return;
         }
         self.travel_mode = false;
+        self.transition_start = Some(Instant::now());
         self.update_title();
     }
 
@@ -155,6 +159,7 @@ impl App {
             Ok(session) => {
                 self.session = session;
                 self.save_mode = false;
+                self.transition_start = Some(Instant::now());
                 self.update_title();
             }
             Err(error) => eprintln!("load {name}: {error}"),
@@ -208,6 +213,13 @@ impl App {
             return;
         }
         self.resize(size.width, size.height);
+        let fade = self
+            .transition_start
+            .map(|start| (start.elapsed().as_secs_f32() / 0.25).min(1.0))
+            .unwrap_or(1.0);
+        if fade >= 1.0 {
+            self.transition_start = None;
+        }
 
         let mut display = if self.map_mode {
             self.map.clone()
@@ -270,6 +282,9 @@ impl App {
                 let sx = x * sw / out_w;
                 let index = usize::from(src.pixels[sy * sw + sx]);
                 let [r, g, b] = palette.get(index).copied().unwrap_or([0, 0, 0]);
+                let r = (f32::from(r) * fade) as u8;
+                let g = (f32::from(g) * fade) as u8;
+                let b = (f32::from(b) * fade) as u8;
                 buffer[y * out_w + x] = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
             }
         }
@@ -465,6 +480,7 @@ impl ApplicationHandler for App {
                         ) {
                             Ok(session) => {
                                 self.session = session;
+                                self.transition_start = Some(Instant::now());
                                 self.update_title();
                             }
                             Err(error) => eprintln!("quick load: {error}"),
