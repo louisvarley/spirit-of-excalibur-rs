@@ -144,3 +144,27 @@ BattleOutcome}`.
 - Magic absorption, loot drops and the exact automatic-battle timing remain.
 - Encounter setup still needs the event/encounter table; only the battle lists
   and record layout are verified.
+
+## Single combat (observed in the original, 2026-10-21)
+
+`tests/oracle/duel_watch.py map 1 62` makes the party walk past Lupinus (with
+B's entity given movement class 2 so the 1-pixel class-0 radius is not
+needed). The fight check returns mode 1 ("Sighting ..., ... prepares for
+single combat"), `FUN_20b5_2a30(1)` switches to the field scene, Lupinus
+speaks, and the duel then runs on the **same battle screen** as army
+battles: "Round Table..." (Constantine) / "Foes..." (Lupinus), orders
+Attack / Defend / Use Item / Magic / Withdraw / Automatic, round messages
+such as "Sir Constantine fails to parry. He is wounded."
+Snapshots: `tests/vectors/emu/duel.snap` (speech) and `duel2.snap` (battle).
+
+So single combat is the battle engine with one unit per side. The runtime
+now does the same. The round engine itself, `FUN_20b5_1dff`, is a per-unit
+script interpreter (9 opcodes via the `CS:1EC6` table) driven by timers and
+sprite state, run by the `20b5` scene functions on the `15b8` widget loop;
+`battle.rs` is still a headless approximation of it and is the next thing
+to port faithfully, using these snapshots as the oracle.
+
+Meeting rules worth knowing when setting up tests: encounters are ignored
+before clock `0xA00`; two characters with no `0x700` flags only meet when
+one is kind 4; the collision radius is `DS:067E[max(class)]` = 1, 8, 16, 32
+for movement class `+0x26 >> 4 & 3`.

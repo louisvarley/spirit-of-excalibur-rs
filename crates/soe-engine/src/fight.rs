@@ -613,3 +613,56 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod search {
+    use super::*;
+
+    /// Helper for finding pairs that start single combat when B stands next
+    /// to A (run with `--ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn find_single_combat_pairs() {
+        let Ok(text) = std::fs::read_to_string("../../tests/vectors/fight.json") else {
+            return;
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let hex = |s: &str| -> Vec<u8> {
+            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        };
+        let base = hex(v["dgroup"].as_str().unwrap());
+        let call = &v["calls"][0];
+        let mut ds0 = base.clone();
+        for (addr, bytes) in call["before"]["regions"].as_object().unwrap() {
+            let at = usize::from_str_radix(addr, 16).unwrap();
+            let b = hex(bytes.as_str().unwrap());
+            ds0[at..at + b.len()].copy_from_slice(&b);
+        }
+        let ents0: Vec<MapEntity> = call["before"]["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| MapEntity(hex(e.as_str().unwrap()).try_into().unwrap()))
+            .collect();
+        for a in 1..=0x5cu8 {
+            for b in 1..=0x5cu8 {
+                if a == b {
+                    continue;
+                }
+                let mut ds = ds0.clone();
+                let mut ents = ents0.clone();
+                let Some(pa) = ents.iter().position(|e| e.id() == u16::from(a)) else { continue };
+                let Some(pb) = ents.iter().position(|e| e.id() == u16::from(b)) else { continue };
+                let (x, y) = (ents[pa].x(), ents[pa].y());
+                ents[pb].0[0x12..0x14].copy_from_slice(&((x + 1) as u16).to_le_bytes());
+                ents[pb].0[0x10..0x12].copy_from_slice(&(y as u16).to_le_bytes());
+                ds[0x9dae] = a;
+                ds[0x9db0] = b;
+                let s = fun_20b5_2c06(&mut ds, &mut ents, true);
+                if s.mode != 0 && s.mode & 0x10 == 0 {
+                    eprintln!("{a},{b}: mode {:#x} first {} second {} hostility {}", s.mode, s.first, s.second, s.hostility);
+                }
+            }
+        }
+    }
+}

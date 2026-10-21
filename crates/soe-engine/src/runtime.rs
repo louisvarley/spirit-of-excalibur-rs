@@ -232,6 +232,8 @@ pub struct Runtime {
     /// final mode to carry out.
     fight: Option<FightSetup>,
     pending_battle: Option<u16>,
+    /// Champions of a single combat (`DS:9C4E` / `DS:9C4F`).
+    pending_pair: Option<(u8, u8)>,
 }
 
 impl Runtime {
@@ -310,6 +312,7 @@ impl Runtime {
             pending_lost: false,
             fight: None,
             pending_battle: None,
+            pending_pair: None,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
         runtime.sync_scene_index();
@@ -860,6 +863,7 @@ impl Runtime {
                             self.map_messages.push_back(first);
                             self.map_messages.extend(more);
                             self.pending_battle = Some(mode);
+                            self.pending_pair = Some((setup.first, setup.second));
                         }
                     }
                     MapEvent::Encounter(dialog) => {
@@ -908,17 +912,33 @@ impl Runtime {
     }
 
     /// Carry out a confrontation's final mode (`FUN_20b5_2a30`): bit 0x10 is
-    /// an army battle; 0x20 (Ignore It) and 0 do nothing. Single combat
-    /// (duels, contests) is not ported yet.
+    /// an army battle between the gathered sides; any other non-zero mode is
+    /// single combat, which the original fights on the same battle screen
+    /// with just the two champions. 0x20 (Ignore It) and 0 do nothing.
     fn start_pending_battle(&mut self, mode: u16) -> Vec<RuntimeEvent> {
+        let pair = self.pending_pair.take();
         if mode == 0 || mode & 0x20 != 0 {
             return Vec::new();
         }
-        if mode & 0x10 == 0 {
-            self.notice = "Single combat is not ported yet.".to_string();
-            return Vec::new();
-        }
-        let Some((player, foe)) = self.mapsim.as_ref().map(MapSim::fight_sides) else {
+        let sides = if mode & 0x10 != 0 {
+            self.mapsim.as_ref().map(MapSim::fight_sides)
+        } else {
+            pair.map(|(a, b)| {
+                // The party side is the Round Table.
+                let party = |id: u8| {
+                    self.mapsim.as_ref().is_some_and(|sim| {
+                        u16::from_le_bytes([
+                            sim.ds()[0x2c5e + usize::from(id) * 0x38 + 0x16],
+                            sim.ds()[0x2c5e + usize::from(id) * 0x38 + 0x17],
+                        ]) & 0x200
+                            != 0
+                    })
+                };
+                let (mine, theirs) = if party(b) && !party(a) { (b, a) } else { (a, b) };
+                (vec![usize::from(mine) - 1], vec![usize::from(theirs) - 1])
+            })
+        };
+        let Some((player, foe)) = sides else {
             return Vec::new();
         };
         self.commit_mapsim();
@@ -1009,6 +1029,7 @@ impl Runtime {
                 let (messages, mode) = sim.resolve_fight(&setup, mode);
                 self.map_messages.extend(messages);
                 self.pending_battle = Some(mode);
+                self.pending_pair = Some((setup.first, setup.second));
             }
             if !self.map_messages.is_empty() {
                 self.screen = Screen::MapMessage;
@@ -2595,5 +2616,34 @@ mod tests {
         assert_eq!(runtime.session().state.characters[0].armor(), 15);
         assert!(runtime.session().state.spells(0).is_empty());
         assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+}
+
+#[cfg(test)]
+mod single_combat_tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Single combat (mode 1, as the original starts for Constantine meeting
+    /// Lupinus) opens the battle screen with just the two champions.
+    #[test]
+    fn single_combat_uses_battle_screen_with_champions() {
+        let game = Path::new("../../game");
+        let exe = Path::new("../../ghidra/EXCAL_UNPACKED.EXE");
+        if !game.join("EPISODE1.DAT").exists() || !exe.exists() {
+            eprintln!("SKIP: game data absent");
+            return;
+        }
+        let session = Session::load(game, exe, 1).unwrap();
+        let map = WorldMap::load(game.join("RES32").join("INTF.RES")).ok();
+        let mut runtime = Runtime::new(session, vec![1], 0, game, exe).with_assets(map, None, None);
+        runtime.open_screen(Screen::Map);
+        runtime.pending_pair = Some((62, 1));
+        let events = runtime.start_pending_battle(1);
+        assert_eq!(events, vec![RuntimeEvent::ScreenChanged(Screen::Battle)]);
+        let battle = runtime.battle().expect("battle");
+        let names = |units: &[crate::battle::BattleUnit]| units.iter().map(|u| u.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&battle.player), vec!["Constantine"]);
+        assert_eq!(names(&battle.foe), vec!["Lupinus"]);
     }
 }
