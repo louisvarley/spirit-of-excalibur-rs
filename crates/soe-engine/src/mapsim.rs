@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 use crate::encounter::{self, EncounterDialog, EncounterOutcome, EncounterWorld, EntityView};
+use crate::fight::{self, FightSetup};
 use crate::travel::{self, ENTITY_BYTES, MapEntity, TravelScratch, TravelTables, TravelWorld};
 
 const DS_MAIN: usize = 0x2c5c;
@@ -61,6 +62,9 @@ pub enum MapEvent {
     },
     /// An encounter dialog opened.
     Encounter(EncounterDialog),
+    /// `FUN_20b5_2c06` started a confrontation (challenge, ambush, army
+    /// sighting, contest).
+    Fight(FightSetup),
 }
 
 pub struct MapSim {
@@ -74,10 +78,17 @@ pub struct MapSim {
     /// `DS:9AAD` / `DS:9ADF` / `DS:9B3B`: recent pairs and expiry.
     cooldown: [(u8, u8, u16); COOLDOWN_SLOTS],
     rng: u32,
+    /// Set by the encounter check's fight hook.
+    pending_fight: Option<FightSetup>,
 }
 
 fn word(ds: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([ds[at], ds[at + 1]])
+}
+
+fn c_string(ds: &[u8], at: usize) -> String {
+    let end = ds[at..].iter().position(|&b| b == 0).map_or(ds.len(), |n| at + n);
+    ds[at..end].iter().map(|&b| char::from(b)).collect()
 }
 
 fn name(id: u8) -> usize {
@@ -133,6 +144,7 @@ impl MapSim {
             scratch: TravelScratch::default(),
             cooldown: [(0, 0, 0xffff); COOLDOWN_SLOTS],
             rng: 0x1234_5678,
+            pending_fight: None,
         })
     }
 
@@ -223,8 +235,8 @@ impl MapSim {
         let shift = self.ds[SHIFT] & 0x1f;
         self.set_clock(clock.wrapping_add(1u32.checked_shl(u32::from(shift)).unwrap_or(0)));
         self.sync_characters();
-        if let Some(dialog) = self.collisions() {
-            events.push(MapEvent::Encounter(dialog));
+        if let Some(event) = self.collisions() {
+            events.push(event);
         }
         events
     }
@@ -242,7 +254,7 @@ impl MapSim {
 
     /// `FUN_1b06_079c`: find the first touching pair and run the encounter
     /// check on it.
-    fn collisions(&mut self) -> Option<EncounterDialog> {
+    fn collisions(&mut self) -> Option<MapEvent> {
         let now = (self.clock() >> 8) as u16;
         let mut pairs = Vec::new();
         for i in 0..self.entities.len() {
@@ -286,8 +298,8 @@ impl MapSim {
                         *slot = (ia, ib, now.wrapping_add(10));
                     }
                     return match outcome {
-                        EncounterOutcome::Dialog(d) => Some(d),
-                        _ => None,
+                        EncounterOutcome::Dialog(d) => Some(MapEvent::Encounter(d)),
+                        _ => self.pending_fight.take().map(MapEvent::Fight),
                     };
                 }
             }
@@ -298,6 +310,50 @@ impl MapSim {
             }
         }
         None
+    }
+
+    /// The confrontation message (`%S` = first, second, first display names).
+    #[must_use]
+    pub fn fight_message(&self, setup: &FightSetup) -> String {
+        let name = |id| crate::text::Arg::Text(crate::names::display_name(&self.ds, id));
+        self.format(setup.message, &[name(setup.first), name(setup.second), name(setup.first)])
+    }
+
+    /// The fight's two sides as 0-based character indices (`DS:9DC3`,
+    /// `DS:9DD7`).
+    #[must_use]
+    pub fn fight_sides(&self) -> (Vec<usize>, Vec<usize>) {
+        let side = |list: usize, count: usize| {
+            (0..usize::from(self.ds[count]))
+                .map(|i| usize::from(self.ds[list + i]).saturating_sub(1))
+                .collect()
+        };
+        (side(fight::LIST1, fight::COUNT1), side(fight::LIST2, fight::COUNT2))
+    }
+
+    /// Apply the player's choice: follow-up messages and the final mode.
+    pub fn resolve_fight(&mut self, setup: &FightSetup, mode: u16) -> (Vec<String>, u16) {
+        let (formats, mode) = fight::fun_20b5_2c06_resolve(&mut self.ds, setup, mode);
+        let attacker = self.ds[0x9c54];
+        let defender = self.ds[0x9c55];
+        let name = |id| crate::text::Arg::Text(crate::names::display_name(&self.ds, id));
+        let messages = formats
+            .into_iter()
+            .map(|f| match f {
+                0x6478 => self.format(f, &[name(attacker)]),
+                0x6492 => {
+                    let feminine = word(&self.ds, crate::mapsim::name(attacker) + 0x16) & 0x800 != 0;
+                    let pronoun = c_string(&self.ds, usize::from(word(&self.ds, 0x79d0 + 4 * usize::from(feminine))));
+                    self.format(f, &[name(attacker), crate::text::Arg::Text(pronoun), name(defender)])
+                }
+                _ => self.format(f, &[]),
+            })
+            .collect();
+        (messages, mode)
+    }
+
+    fn format(&self, at: u16, args: &[crate::text::Arg]) -> String {
+        crate::text::format_message(&c_string(&self.ds, usize::from(at)), args, |_| None)
     }
 
     /// Write positions, targets and the clock into save bytes.
@@ -330,8 +386,16 @@ impl EncounterWorld for MapSim {
         self.rng = self.rng.wrapping_mul(0x015a_4e35).wrapping_add(1);
         if n == 0 { 0 } else { ((self.rng >> 16) % u32::from(n)) as u16 }
     }
-    fn combat(&mut self, _first: u8, _second: u8) -> bool {
-        false // FUN_20b5_2c06 not ported yet
+    fn combat(&mut self, first: u8, second: u8) -> bool {
+        // FUN_2920_0a12 leaves the pair in DS:9DAE / DS:9DB0 for the check.
+        self.ds[0x9dae] = first;
+        self.ds[0x9db0] = second;
+        let setup = fight::fun_20b5_2c06(&mut self.ds, &mut self.entities, true);
+        if setup.mode == 0 {
+            return false;
+        }
+        self.pending_fight = Some(setup);
+        true
     }
 }
 

@@ -875,7 +875,7 @@ fn draw_encounter(frame: &mut IndexedFrame, runtime: &Runtime) {
     };
     let buttons = runtime.encounter_buttons();
     let rects = runtime.encounter_button_rects();
-    let selected = runtime.encounter().map_or(0, |(_, index)| index);
+    let selected = runtime.encounter_selection();
     let height = rects.last().map_or(40, |&(_, y, _)| i32::from(y) + 12);
     let (ox, oy) = match runtime.panel() {
         Some(panel) => draw_panel(frame, session, panel, 8, 5, 0x10e + 0x20, height),

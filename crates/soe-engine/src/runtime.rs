@@ -17,6 +17,7 @@ use soe_video::{LOGICAL_WIDTH, PlanarImage};
 use crate::battle::{Battle, BattleOutcome, Order};
 use crate::economy::InventoryEntry;
 use crate::encounter::EncounterDialog;
+use crate::fight::{FightButton, FightSetup};
 use crate::mapsim::{MapEvent, MapSim};
 use crate::interaction::{Dialogue, character_name};
 use crate::session::Session;
@@ -227,6 +228,10 @@ pub struct Runtime {
     /// What to do once the messages are read: enter this marker / lose.
     pending_enter: Option<usize>,
     pending_lost: bool,
+    /// Open confrontation (`FUN_20b5_2c06`) and, after its messages, the
+    /// final mode to carry out.
+    fight: Option<FightSetup>,
+    pending_battle: Option<u16>,
 }
 
 impl Runtime {
@@ -303,6 +308,8 @@ impl Runtime {
             map_messages: std::collections::VecDeque::new(),
             pending_enter: None,
             pending_lost: false,
+            fight: None,
+            pending_battle: None,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
         runtime.sync_scene_index();
@@ -738,9 +745,32 @@ impl Runtime {
         self.encounter.map(|d| (d, self.encounter_index))
     }
 
+    /// Highlighted button of the open encounter or confrontation window.
+    #[must_use]
+    pub fn encounter_selection(&self) -> usize {
+        self.encounter_index
+    }
+
     /// Button labels of the open encounter, in order.
     #[must_use]
     pub fn encounter_buttons(&self) -> Vec<String> {
+        if let Some(setup) = &self.fight {
+            return setup
+                .buttons
+                .iter()
+                .map(|b| {
+                    match b {
+                        FightButton::Accept(_) => "Accept",
+                        FightButton::Decline => "Decline",
+                        FightButton::ExecuteFoe => "Execute Foe",
+                        FightButton::ArmyAttack => "Army Attack",
+                        FightButton::GoThere(_) => "Go There",
+                        FightButton::IgnoreIt => "Ignore It",
+                    }
+                    .to_string()
+                })
+                .collect();
+        }
         let (Some(d), Some(sim)) = (self.encounter, &self.mapsim) else {
             return Vec::new();
         };
@@ -760,6 +790,9 @@ impl Runtime {
     /// Encounter sentence, as the original formats it.
     #[must_use]
     pub fn encounter_text(&self) -> String {
+        if let (Some(setup), Some(sim)) = (&self.fight, &self.mapsim) {
+            return sim.fight_message(setup);
+        }
         match (self.encounter, &self.mapsim) {
             (Some(d), Some(sim)) => crate::names::encounter_sentence(sim.ds(), &d),
             _ => String::new(),
@@ -768,6 +801,8 @@ impl Runtime {
 
     fn advance_map(&mut self, delta: Duration) -> Vec<RuntimeEvent> {
         const ROUND: Duration = Duration::from_millis(40);
+        // Back from a battle: rebuild the live map from the updated state.
+        self.ensure_mapsim();
         let id = self.party_id();
         let Some(sim) = self.mapsim.as_ref() else {
             return Vec::new();
@@ -807,6 +842,26 @@ impl Runtime {
                                 .position(|m| location != 0 && m.location_index == row);
                         }
                     }
+                    MapEvent::Fight(setup) => {
+                        self.map_accum = Duration::ZERO;
+                        if setup.modal {
+                            self.fight = Some(setup);
+                            self.encounter_index = 0;
+                            self.screen = Screen::Encounter;
+                            out.push(RuntimeEvent::ScreenChanged(Screen::Encounter));
+                            return out;
+                        }
+                        // No buttons: the original shows the message for a
+                        // few seconds, then goes on with the setup's mode.
+                        let mode = setup.mode;
+                        if let Some(sim) = self.mapsim.as_mut() {
+                            let first = sim.fight_message(&setup);
+                            let (more, mode) = sim.resolve_fight(&setup, mode);
+                            self.map_messages.push_back(first);
+                            self.map_messages.extend(more);
+                            self.pending_battle = Some(mode);
+                        }
+                    }
                     MapEvent::Encounter(dialog) => {
                         self.encounter = Some(dialog);
                         self.encounter_index = 0;
@@ -823,7 +878,7 @@ impl Runtime {
                 out.push(RuntimeEvent::ScreenChanged(Screen::MapMessage));
                 return out;
             }
-            if stop || self.pending_lost {
+            if stop || self.pending_lost || self.pending_battle.is_some() {
                 self.map_accum = Duration::ZERO;
                 out.extend(self.finish_map_messages());
                 return out;
@@ -852,7 +907,33 @@ impl Runtime {
         }
     }
 
+    /// Carry out a confrontation's final mode (`FUN_20b5_2a30`): bit 0x10 is
+    /// an army battle; 0x20 (Ignore It) and 0 do nothing. Single combat
+    /// (duels, contests) is not ported yet.
+    fn start_pending_battle(&mut self, mode: u16) -> Vec<RuntimeEvent> {
+        if mode == 0 || mode & 0x20 != 0 {
+            return Vec::new();
+        }
+        if mode & 0x10 == 0 {
+            self.notice = "Single combat is not ported yet.".to_string();
+            return Vec::new();
+        }
+        let Some((player, foe)) = self.mapsim.as_ref().map(MapSim::fight_sides) else {
+            return Vec::new();
+        };
+        self.commit_mapsim();
+        if self.start_battle(&player, &foe) {
+            vec![RuntimeEvent::ScreenChanged(Screen::Battle)]
+        } else {
+            self.ensure_mapsim();
+            Vec::new()
+        }
+    }
+
     fn finish_map_messages(&mut self) -> Vec<RuntimeEvent> {
+        if let Some(mode) = self.pending_battle.take() {
+            return self.start_pending_battle(mode);
+        }
         if self.pending_lost {
             self.pending_lost = false;
             self.commit_mapsim();
@@ -915,6 +996,26 @@ impl Runtime {
     }
 
     fn activate_encounter(&mut self, index: usize) -> Vec<RuntimeEvent> {
+        if let Some(setup) = self.fight.take() {
+            let mode = match setup.buttons.get(index) {
+                Some(FightButton::Accept(v) | FightButton::GoThere(v)) => *v,
+                Some(FightButton::ExecuteFoe) => 0x70,
+                Some(FightButton::ArmyAttack) => 0x10,
+                Some(FightButton::IgnoreIt) => 0x30,
+                Some(FightButton::Decline) | None => 0,
+            };
+            self.screen = Screen::Map;
+            if let Some(sim) = self.mapsim.as_mut() {
+                let (messages, mode) = sim.resolve_fight(&setup, mode);
+                self.map_messages.extend(messages);
+                self.pending_battle = Some(mode);
+            }
+            if !self.map_messages.is_empty() {
+                self.screen = Screen::MapMessage;
+                return vec![RuntimeEvent::ScreenChanged(Screen::MapMessage)];
+            }
+            return self.finish_map_messages();
+        }
         let Some(dialog) = self.encounter.take() else {
             return Vec::new();
         };

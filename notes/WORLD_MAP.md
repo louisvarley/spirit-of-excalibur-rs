@@ -150,3 +150,30 @@ Buttons: "Stop to talk to <name>" (unless `0x8000`), "Join Forces" (both
 `0x200`), "Continue on". The pronoun table at `DS:79E0` (he/she/they/they) is
 indexed by (`0x800`, count > 1). Noun phrases come from `FUN_15b8_16fe`
 ("a " for a townsman); not ported yet.
+
+## Confrontations (`FUN_20b5_2c06`) — ported, oracle-verified (decision part)
+
+`soe-engine::fight` ports the fight check and its helpers: `FUN_2a6e_01e7`
+(a character's group: walks the leader tree at `name+0x31`, leaves with
+`0x8000` first, explicit 10-deep stack), `FUN_2a6e_06a8` (groups of
+leaderless characters within one tile, filtered by side `flags>>12`),
+`FUN_26c5_041b` (disposition 0..99 from the `DS:69A6` 5x5 table, the
+`+0x2F`/`+0x30` bytes and the relation table `DS:4F25`), `FUN_2d65_0f58`
+(entities -> records) and `FUN_2d65_0a2a` (location of the top leader).
+
+Verified on 294 direct calls of the original from the map snapshot (party
+against everyone both ways, plus the six armies against every fifth
+character; `tests/oracle/fight_vectors.py`): modes 1, 4 and 9 occur. The
+challenge / ambush / arrest / army-sighting branches (modes 0x1182, 0x1282,
+0x30, 0x10) need saves where those groups exist and are not covered yet.
+
+Mode word `DS:9C56` -> `FUN_20b5_2a30`: bit `0x10` is an army battle on the
+map; other non-zero modes are personal combat (duel/contest via callback
+`15B8:1622` and `FUN_2920_0a00`). Buttons return a mode: Accept (setup
+value), Decline 0, Execute Foe 0x70, Army Attack 0x10, Go There (setup
+value), Ignore It 0x30. The runtime treats 0x20 as "ignore" (from the
+label, not proven) and starts the army battle for 0x10; single combat is
+not ported.
+
+Harness note: snapshots are often taken inside the timer IRQ (IF clear), so
+direct calls must set IF, and the UI loop `FUN_15b8_09f7` is skipped.
