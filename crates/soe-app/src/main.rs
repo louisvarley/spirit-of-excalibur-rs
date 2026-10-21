@@ -17,6 +17,7 @@ mod audio;
 
 use anyhow::{Context, Result};
 use soe_assets::Palette;
+use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
 use soe_engine::story::HintBook;
@@ -27,163 +28,26 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-const TICK: Duration = Duration::from_micros(54_945); // 18.2 Hz
-
 struct App {
     window: Option<Arc<Window>>,
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    session: Session,
-    game_dir: PathBuf,
-    exe: PathBuf,
-    scene_ids: Vec<u16>,
-    scene_index: usize,
-    animation_accum: Duration,
+    runtime: Runtime,
     last_tick: Instant,
     cursor: (f64, f64),
-    map: Option<IndexedFrame>,
-    panel: Option<soe_video::PlanarImage>,
-    story: Option<HintBook>,
-    map_mode: bool,
-    status_mode: bool,
-    story_mode: bool,
-    paused: bool,
-    story_page: usize,
-    travel_mode: bool,
-    travel_index: usize,
-    save_mode: bool,
-    save_files: Vec<String>,
-    save_index: usize,
-    transition_start: Option<Instant>,
-    action_mode: bool,
-    action_index: usize,
-    item_mode: bool,
-    item_index: usize,
-    item_action: usize,
-    target_mode: bool,
-    target_index: usize,
-    target_action: usize,
     audio: Option<audio::AudioPlayer>,
 }
 
 impl App {
-    fn new(
-        session: Session,
-        game_dir: PathBuf,
-        exe: PathBuf,
-        scene_ids: Vec<u16>,
-        scene_index: usize,
-        map: Option<IndexedFrame>,
-        panel: Option<soe_video::PlanarImage>,
-        story: Option<HintBook>,
-        start_map: bool,
-        start_status: bool,
-        start_story: bool,
-    ) -> Self {
-        let save_files = list_saves(&game_dir);
+    fn new(runtime: Runtime) -> Self {
         Self {
             window: None,
             context: None,
             surface: None,
-            session,
-            game_dir,
-            exe,
-            scene_ids,
-            scene_index,
-            animation_accum: Duration::ZERO,
+            runtime,
             last_tick: Instant::now(),
             cursor: (0.0, 0.0),
-            map,
-            panel,
-            story,
-            map_mode: start_map,
-            status_mode: start_status,
-            story_mode: start_story,
-            paused: false,
-            story_page: 0,
-            travel_mode: false,
-            travel_index: 0,
-            save_mode: false,
-            save_files,
-            save_index: 0,
-            transition_start: None,
-            action_mode: false,
-            action_index: 0,
-            item_mode: false,
-            item_index: 0,
-            item_action: 0,
-            target_mode: false,
-            target_index: 0,
-            target_action: 0,
             audio: None,
-        }
-    }
-
-    fn change_scene(&mut self, delta: isize) {
-        if self.scene_ids.is_empty() {
-            return;
-        }
-        let len = self.scene_ids.len() as isize;
-        let next = (self.scene_index as isize + delta).rem_euclid(len) as usize;
-        let id = self.scene_ids[next];
-        if let Err(error) = self.session.enter_scene(id) {
-            eprintln!("scene {id}: {error}");
-            return;
-        }
-        self.scene_index = next;
-        self.animation_accum = Duration::ZERO;
-        self.transition_start = Some(Instant::now());
-        self.update_title();
-    }
-
-    fn travel_to_selected(&mut self) {
-        let locations: Vec<_> = self
-            .session
-            .state
-            .locations
-            .iter()
-            .filter(|location| !location.name().is_empty())
-            .collect();
-        let Some(location) =
-            locations.get(self.travel_index.min(locations.len().saturating_sub(1)))
-        else {
-            return;
-        };
-        let Some(scene_id) = location.scene_id() else {
-            return;
-        };
-        if let Err(error) = self.session.enter_scene(scene_id) {
-            eprintln!("travel to scene {scene_id}: {error}");
-            return;
-        }
-        self.travel_mode = false;
-        self.transition_start = Some(Instant::now());
-        self.update_title();
-    }
-
-    fn save_quick(&mut self) {
-        if let Err(error) = self.session.save_to(&self.game_dir, "QUICK.SAV") {
-            eprintln!("quick save: {error}");
-        } else {
-            self.save_files = list_saves(&self.game_dir);
-            if let Some(index) = self.save_files.iter().position(|name| name == "QUICK.SAV") {
-                self.save_index = index;
-            }
-        }
-    }
-
-    fn load_save_selected(&mut self) {
-        let Some(name) = self.save_files.get(self.save_index).cloned() else {
-            return;
-        };
-        match Session::load_save(&self.game_dir, &self.exe, self.session.scene_id, &name) {
-            Ok(session) => {
-                self.session = session;
-                self.save_mode = false;
-                self.transition_start = Some(Instant::now());
-                self.update_title();
-            }
-            Err(error) => eprintln!("load {name}: {error}"),
         }
     }
 
@@ -191,35 +55,39 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.target_mode {
-            "SELECT TARGET".to_string()
-        } else if self.item_mode {
-            "ITEMS".to_string()
-        } else if self.action_mode {
-            "ACTIONS".to_string()
-        } else if self.save_mode {
-            "SAVES".to_string()
-        } else if self.travel_mode {
-            "TRAVEL".to_string()
-        } else if self.story_mode {
-            "CHRONICLE".to_string()
-        } else if self.paused {
-            "PAUSED".to_string()
-        } else if self.status_mode {
-            "STATUS".to_string()
-        } else if self.map_mode {
-            "MAP".to_string()
-        } else {
-            format!(
+        let mode = match self.runtime.screen() {
+            Screen::Room => format!(
                 "SCENE {} ({}/{})",
-                self.session.scene_id,
-                self.scene_index + 1,
-                self.scene_ids.len()
-            )
+                self.runtime.scene_id(),
+                self.runtime.scene_index() + 1,
+                self.runtime.scene_count()
+            ),
+            other => other.label().to_string(),
         };
         window.set_title(&format!(
-            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  S saves  H chronicle  P pause  Esc quit"
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  S saves  H chronicle  A actions  P pause  Esc quit"
         ));
+    }
+
+    fn apply(&mut self, event_loop: &ActiveEventLoop, events: Vec<RuntimeEvent>) {
+        for event in events {
+            match event {
+                RuntimeEvent::Quit => event_loop.exit(),
+                RuntimeEvent::MuteToggled => {
+                    if let Some(audio) = &self.audio {
+                        audio.toggle_mute();
+                    }
+                }
+                RuntimeEvent::Error(error) => eprintln!("{error}"),
+                RuntimeEvent::Saved(name) => eprintln!("saved {name}"),
+                RuntimeEvent::Loaded(name) => eprintln!("loaded {name}"),
+                RuntimeEvent::ScreenChanged(_)
+                | RuntimeEvent::SceneChanged(_)
+                | RuntimeEvent::GameLost
+                | RuntimeEvent::MenuEntered => {}
+            }
+        }
+        self.update_title();
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -240,86 +108,119 @@ impl App {
             return;
         }
         self.resize(size.width, size.height);
-        let fade = self
-            .transition_start
-            .map(|start| (start.elapsed().as_secs_f32() / 0.25).min(1.0))
-            .unwrap_or(1.0);
-        if fade >= 1.0 {
-            self.transition_start = None;
-        }
+        let fade = self.runtime.fade();
+        let screen = self.runtime.screen();
 
-        let mut display = if self.map_mode {
-            self.map.clone()
+        let mut display = if screen == Screen::Map {
+            self.runtime.map().cloned()
         } else {
             None
         };
-        if self.status_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_status(&mut copy, &self.session);
-            display = Some(copy);
-        }
-        if self.paused {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            if let Some(font) = self.session.font() {
-                if let Some(panel) = self.panel.as_ref() {
-                    draw_panel(&mut copy, panel, 0, 72, 320, 56);
-                }
-                font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", Some(0));
-                font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", Some(0));
+        match screen {
+            Screen::Status => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_status(&mut copy, self.runtime.session());
+                display = Some(copy);
             }
-            display = Some(copy);
-        }
-        if self.story_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_story(
-                &mut copy,
-                &self.session,
-                self.story.as_ref(),
-                self.panel.as_ref(),
-                self.story_page,
-            );
-            display = Some(copy);
-        }
-        if self.travel_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_travel(&mut copy, &self.session, self.travel_index);
-            display = Some(copy);
-        }
-        if self.save_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_saves(&mut copy, &self.session, &self.save_files, self.save_index);
-            display = Some(copy);
-        }
-        if self.action_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_actions(
-                &mut copy,
-                &self.session,
-                self.panel.as_ref(),
-                self.action_index,
-            );
-            display = Some(copy);
-        }
-        if self.item_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_items(
-                &mut copy,
-                &self.session,
-                self.panel.as_ref(),
-                self.item_index,
-                self.item_action,
-            );
-            display = Some(copy);
-        }
-        if self.target_mode {
-            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
-            draw_targets(
-                &mut copy,
-                &self.session,
-                self.panel.as_ref(),
-                self.target_index,
-            );
-            display = Some(copy);
+            Screen::Pause => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                if let Some(font) = self.runtime.session().font() {
+                    if let Some(panel) = self.runtime.panel() {
+                        draw_panel(&mut copy, panel, 0, 72, 320, 56);
+                    }
+                    font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", Some(0));
+                    font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", Some(0));
+                }
+                display = Some(copy);
+            }
+            Screen::Story => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_story(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.story(),
+                    self.runtime.panel(),
+                    self.runtime.story_page(),
+                );
+                display = Some(copy);
+            }
+            Screen::Travel => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_travel(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.travel_index(),
+                );
+                display = Some(copy);
+            }
+            Screen::Save => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_saves(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.save_files(),
+                    self.runtime.save_index(),
+                );
+                display = Some(copy);
+            }
+            Screen::Action => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_actions(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.panel(),
+                    self.runtime.action_index(),
+                );
+                display = Some(copy);
+            }
+            Screen::Item => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_items(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.panel(),
+                    self.runtime.item_index(),
+                    self.runtime.item_action(),
+                );
+                display = Some(copy);
+            }
+            Screen::Target => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_targets(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.panel(),
+                    self.runtime.target_index(),
+                );
+                display = Some(copy);
+            }
+            Screen::Menu => {
+                let mut copy = self.runtime.session().frame.clone();
+                draw_menu(&mut copy, self.runtime.session(), self.runtime.panel());
+                display = Some(copy);
+            }
+            Screen::GameLost => {
+                let mut copy = self.runtime.session().frame.clone();
+                draw_game_lost(&mut copy, self.runtime.session());
+                display = Some(copy);
+            }
+            Screen::Room | Screen::Map | Screen::Quit => {}
         }
 
         let Some(surface) = &mut self.surface else {
@@ -330,8 +231,8 @@ impl App {
         };
         let out_w = size.width as usize;
         let out_h = size.height as usize;
-        let src = display.as_ref().unwrap_or(&self.session.frame);
-        let palette = &self.session.palettes().room.colors;
+        let src = display.as_ref().unwrap_or(&self.runtime.session().frame);
+        let palette = &self.runtime.session().palettes().room.colors;
         let sw = usize::from(src.width);
         let sh = usize::from(src.height);
         for y in 0..out_h {
@@ -410,256 +311,30 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                let width = self
-                    .window
-                    .as_ref()
-                    .map_or(1.0, |window| f64::from(window.inner_size().width));
-                if self.travel_mode {
-                    if self.cursor.0 >= width / 2.0 {
-                        self.travel_index = self.travel_index.saturating_add(1);
-                    } else {
-                        self.travel_index = self.travel_index.saturating_sub(1);
-                    }
-                } else if self.story_mode {
-                    if self.cursor.0 >= width / 2.0 {
-                        self.story_page = self.story_page.wrapping_add(1);
-                    } else {
-                        self.story_page = self.story_page.saturating_sub(1);
-                    }
+                let (width, height) = self.window.as_ref().map_or((1.0, 1.0), |window| {
+                    let size = window.inner_size();
+                    (f64::from(size.width), f64::from(size.height))
+                });
+                let x = if width > 0.0 {
+                    (self.cursor.0 / width * f64::from(soe_video::LOGICAL_WIDTH)) as i16
                 } else {
-                    self.change_scene(if self.cursor.0 >= width / 2.0 { 1 } else { -1 });
-                }
+                    0
+                };
+                let y = if height > 0.0 {
+                    (self.cursor.1 / height * f64::from(soe_video::LOGICAL_HEIGHT)) as i16
+                } else {
+                    0
+                };
+                let events = self.runtime.handle_click(x, y);
+                self.apply(event_loop, events);
             }
             WindowEvent::RedrawRequested => self.redraw(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
-                if self.target_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
-                            self.target_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            self.target_index = self.target_index.saturating_sub(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            let count = self
-                                .session
-                                .state
-                                .characters
-                                .iter()
-                                .skip(1)
-                                .filter(|character| !character.name().is_empty())
-                                .count();
-                            if count > 0 {
-                                self.target_index = (self.target_index + 1).min(count - 1);
-                            }
-                        }
-                        PhysicalKey::Code(KeyCode::Enter) => {
-                            self.target_mode = false;
-                            if self.target_action == 2 {
-                                self.story_mode = true;
-                                self.story_page = 0;
-                            } else if self.target_action == 9 {
-                                self.item_mode = true;
-                                self.item_index = 0;
-                                self.item_action = 9;
-                            }
-                            self.update_title();
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                if self.item_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
-                            self.item_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            self.item_index = self.item_index.saturating_sub(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            let count = self
-                                .session
-                                .state
-                                .items
-                                .iter()
-                                .filter(|item| !item.name().is_empty())
-                                .count();
-                            if count > 0 {
-                                self.item_index = (self.item_index + 1).min(count - 1);
-                            }
-                        }
-                        PhysicalKey::Code(KeyCode::Enter) => {
-                            self.item_mode = false;
-                            self.update_title();
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                if self.action_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
-                            self.action_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                            self.action_index = self.action_index.saturating_sub(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowRight) => {
-                            self.action_index = (self.action_index + 1).min(11);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            self.action_index = self.action_index.saturating_sub(4);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            self.action_index = (self.action_index + 4).min(11);
-                        }
-                        PhysicalKey::Code(KeyCode::Enter) => {
-                            if matches!(self.action_index, 2 | 9) {
-                                self.action_mode = false;
-                                self.target_mode = true;
-                                self.target_index = 0;
-                                self.target_action = self.action_index;
-                            } else if matches!(self.action_index, 0 | 1 | 3) {
-                                self.action_mode = false;
-                                self.item_mode = true;
-                                self.item_index = 0;
-                                self.item_action = self.action_index;
-                            } else {
-                                self.action_mode = false;
-                            }
-                            self.update_title();
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                if self.save_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyS) => {
-                            self.save_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            self.save_index = self.save_index.saturating_sub(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            if !self.save_files.is_empty() {
-                                self.save_index =
-                                    (self.save_index + 1).min(self.save_files.len() - 1);
-                            }
-                        }
-                        PhysicalKey::Code(KeyCode::Enter) => self.load_save_selected(),
-                        PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
-                        _ => {}
-                    }
-                    return;
-                }
-                if self.travel_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
-                        PhysicalKey::Code(KeyCode::KeyT) => {
-                            self.travel_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowUp) => {
-                            self.travel_index = self.travel_index.saturating_sub(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowDown) => {
-                            self.travel_index = self.travel_index.saturating_add(1);
-                        }
-                        PhysicalKey::Code(KeyCode::Enter) => self.travel_to_selected(),
-                        _ => {}
-                    }
-                    return;
-                }
-                if self.story_mode {
-                    match event.physical_key {
-                        PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
-                        PhysicalKey::Code(KeyCode::KeyH) => {
-                            self.story_mode = false;
-                            self.update_title();
-                        }
-                        PhysicalKey::Code(KeyCode::Space)
-                        | PhysicalKey::Code(KeyCode::ArrowRight) => {
-                            self.story_page = self.story_page.wrapping_add(1);
-                        }
-                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
-                            self.story_page = self.story_page.saturating_sub(1);
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
-                match event.physical_key {
-                    PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
-                    PhysicalKey::Code(KeyCode::ArrowLeft) => self.change_scene(-1),
-                    PhysicalKey::Code(KeyCode::ArrowRight) => self.change_scene(1),
-                    PhysicalKey::Code(KeyCode::Space) => {
-                        self.session.advance_animation_frame();
-                        self.animation_accum = Duration::ZERO;
-                    }
-                    PhysicalKey::Code(KeyCode::KeyR) => {
-                        self.session.reset_animation_frame();
-                        self.animation_accum = Duration::ZERO;
-                    }
-                    PhysicalKey::Code(KeyCode::KeyM) => {
-                        self.map_mode = !self.map_mode;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyI) => {
-                        self.status_mode = !self.status_mode;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyP) => {
-                        self.paused = !self.paused;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyH) => {
-                        self.story_mode = true;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyT) => {
-                        self.travel_mode = true;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyS) => {
-                        self.save_files = list_saves(&self.game_dir);
-                        self.save_mode = true;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::KeyA) => {
-                        self.action_mode = true;
-                        self.action_index = 0;
-                        self.update_title();
-                    }
-                    PhysicalKey::Code(KeyCode::F2) => {
-                        if let Some(audio) = &self.audio {
-                            audio.toggle_mute();
-                        }
-                    }
-                    PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
-                    PhysicalKey::Code(KeyCode::F9) => {
-                        match Session::load_save(
-                            &self.game_dir,
-                            &self.exe,
-                            self.session.scene_id,
-                            "QUICK.SAV",
-                        ) {
-                            Ok(session) => {
-                                self.session = session;
-                                self.transition_start = Some(Instant::now());
-                                self.update_title();
-                            }
-                            Err(error) => eprintln!("quick load: {error}"),
-                        }
-                    }
-                    _ => {}
+                if let Some(key) = runtime_key(event.physical_key) {
+                    let events = self.runtime.handle_key(key);
+                    self.apply(event_loop, events);
                 }
             }
             _ => {}
@@ -670,16 +345,9 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        if self.session.animation_count() > 0
-            && !self.paused
-            && !self.story_mode
-            && !self.travel_mode
-        {
-            self.animation_accum += delta;
-            while self.animation_accum >= TICK {
-                self.session.advance_animation_frame();
-                self.animation_accum -= TICK;
-            }
+        let events = self.runtime.tick(delta);
+        if !events.is_empty() {
+            self.apply(event_loop, events);
         }
         if let Some(window) = &self.window {
             window.request_redraw();
@@ -687,6 +355,29 @@ impl ApplicationHandler for App {
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(16),
         ));
+    }
+}
+
+fn runtime_key(key: PhysicalKey) -> Option<Key> {
+    match key {
+        PhysicalKey::Code(KeyCode::ArrowUp) => Some(Key::Up),
+        PhysicalKey::Code(KeyCode::ArrowDown) => Some(Key::Down),
+        PhysicalKey::Code(KeyCode::ArrowLeft) => Some(Key::Left),
+        PhysicalKey::Code(KeyCode::ArrowRight) => Some(Key::Right),
+        PhysicalKey::Code(KeyCode::Enter) => Some(Key::Confirm),
+        PhysicalKey::Code(KeyCode::Escape) => Some(Key::Cancel),
+        PhysicalKey::Code(KeyCode::Space) => Some(Key::Space),
+        PhysicalKey::Code(KeyCode::KeyM) => Some(Key::Map),
+        PhysicalKey::Code(KeyCode::KeyI) => Some(Key::Status),
+        PhysicalKey::Code(KeyCode::KeyH) => Some(Key::Story),
+        PhysicalKey::Code(KeyCode::KeyT) => Some(Key::Travel),
+        PhysicalKey::Code(KeyCode::KeyS) => Some(Key::Save),
+        PhysicalKey::Code(KeyCode::KeyP) => Some(Key::Pause),
+        PhysicalKey::Code(KeyCode::KeyA) => Some(Key::Action),
+        PhysicalKey::Code(KeyCode::F5) => Some(Key::QuickSave),
+        PhysicalKey::Code(KeyCode::F9) => Some(Key::QuickLoad),
+        PhysicalKey::Code(KeyCode::F2) => Some(Key::Mute),
+        _ => None,
     }
 }
 
@@ -1129,6 +820,28 @@ fn draw_panel(
     );
 }
 
+fn draw_menu(frame: &mut IndexedFrame, session: &Session, panel: Option<&soe_video::PlanarImage>) {
+    fill_rect(frame, 0, 0, 320, 200, 0);
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 20, 40, 280, 96);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 52, 58, "SPIRIT OF EXCALIBUR", Some(8));
+    font.draw_text(frame, 58, 78, "ENTER CONTINUE", Some(0));
+    font.draw_text(frame, 70, 92, "ESC QUIT", Some(0));
+}
+
+fn draw_game_lost(frame: &mut IndexedFrame, session: &Session) {
+    fill_rect(frame, 0, 0, 320, 200, 0);
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 126, 90, "GAMELOST", Some(8));
+    font.draw_text(frame, 104, 110, "PRESS ENTER TO QUIT", Some(7));
+}
+
 fn draw_status(frame: &mut IndexedFrame, session: &Session) {
     fill_rect(frame, 10, 18, 300, 168, 0);
     fill_rect(frame, 10, 18, 300, 1, 7);
@@ -1177,22 +890,6 @@ fn fill_rect(frame: &mut IndexedFrame, x: u16, y: u16, width: u16, height: u16, 
             frame.set_pixel(px, py, color);
         }
     }
-}
-
-fn list_saves(game_dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(game_dir) else {
-        return Vec::new();
-    };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter(|entry| entry.path().is_file())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.to_ascii_lowercase().ends_with(".sav"))
-        .map(|name| name.to_ascii_uppercase())
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 fn load_record_image(path: &Path, id: u16) -> Result<soe_video::PlanarImage> {
@@ -1279,32 +976,40 @@ fn main() -> Result<()> {
             player.play_score(&song.score);
         }
     }
-    let start_story = args.iter().any(|arg| arg == "--story");
+    let mut runtime = Runtime::new(session, scene_ids, start, game_dir.clone(), exe.clone())
+        .with_assets(map, panel, story);
+    if start_map {
+        runtime.open_screen(Screen::Map);
+    }
+    if start_status {
+        runtime.open_screen(Screen::Status);
+    }
+    if args.iter().any(|arg| arg == "--story") {
+        runtime.open_screen(Screen::Story);
+    }
+    if args.iter().any(|arg| arg == "--travel") {
+        runtime.open_screen(Screen::Travel);
+    }
+    if args.iter().any(|arg| arg == "--saves") {
+        runtime.open_screen(Screen::Save);
+    }
+    if args.iter().any(|arg| arg == "--actions") {
+        runtime.open_screen(Screen::Action);
+    }
+    if args.iter().any(|arg| arg == "--items") {
+        runtime.open_item(9);
+    }
+    if args.iter().any(|arg| arg == "--targets") {
+        runtime.open_target(0);
+    }
+    if args.iter().any(|arg| arg == "--paused") {
+        runtime.open_screen(Screen::Pause);
+    }
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let paused = args.iter().any(|arg| arg == "--paused");
-    let mut app = App::new(
-        session,
-        game_dir.clone(),
-        exe.clone(),
-        scene_ids,
-        start,
-        map,
-        panel,
-        story,
-        start_map,
-        start_status,
-        start_story,
-    );
+    let mut app = App::new(runtime);
     app.audio = audio;
-    app.paused = paused;
-    app.travel_mode = args.iter().any(|arg| arg == "--travel");
-    app.save_mode = args.iter().any(|arg| arg == "--saves");
-    app.action_mode = args.iter().any(|arg| arg == "--actions");
-    app.item_mode = args.iter().any(|arg| arg == "--items");
-    app.item_action = 9;
-    app.target_mode = args.iter().any(|arg| arg == "--targets");
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }

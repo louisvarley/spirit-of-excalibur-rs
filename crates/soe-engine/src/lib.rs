@@ -31,6 +31,8 @@ pub mod palette;
 
 pub mod session;
 
+pub mod runtime;
+
 pub mod font;
 
 pub mod story;

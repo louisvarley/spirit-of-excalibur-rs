@@ -74,6 +74,35 @@ pub struct Session {
 }
 
 impl Session {
+    /// Empty session for headless state-machine tests. It has no resources,
+    /// no font and an all-zero save state.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn headless() -> Self {
+        let state = GameState::parse(&[0u8; crate::save::FILE_SIZE]).expect("empty save state");
+        Self {
+            game_dir: PathBuf::new(),
+            resources: ResourceManager::new(),
+            palettes: PaletteSet {
+                room: Palette::black(),
+                map: Palette::black(),
+                ui: Palette::black(),
+            },
+            state,
+            scene_id: 0,
+            scene: Scene {
+                background: 0,
+                objects: Vec::new(),
+                trailer: 0,
+            },
+            frame: IndexedFrame::black(),
+            font: None,
+            static_images: std::collections::HashMap::new(),
+            animations: std::collections::HashMap::new(),
+            animation_frame: 0,
+        }
+    }
+
     /// Load `EPISODE1.DAT`, `SCENES.RES`, all `RES32/*.RES`, and palettes from
     /// the unpacked executable (falling back to black if unavailable).
     pub fn load(

@@ -1,6 +1,6 @@
 # STATUS
 
-Updated: M1/M2/M3 foundation session.
+Updated: M3 main-loop runtime port.
 
 ## Read this first
 
@@ -33,7 +33,12 @@ Updated: M1/M2/M3 foundation session.
 - Location travel list and save/load browser.
 - End-to-end engine integration test (room, animation, save, font, story,
   travel).
-- Main loop/renderer structure documented.
+- Main loop ported as `soe-engine::runtime::Runtime`: all screens are states,
+  the original `-5`/`-4`/`-3`/`-2`/`-1` loop words are modelled, and
+  room/map/status/story/travel/save/pause/action/item/target transitions and
+  input routing live in the engine. `soe-app` drives `Runtime` and only
+  presents frames/effects.
+- State-transition unit tests plus an integration test over a real episode.
 
 ## M1 remaining
 
@@ -51,9 +56,9 @@ Updated: M1/M2/M3 foundation session.
 
 ## M3 remaining
 
-- Port `FUN_2d65_2cd9` state loop and driver callback layer.
+- Driver callback layer inside the ported `FUN_2d65_2cd9` state machine.
 - Text/UI rendering through `Video` (BitmapFont exists; driver-font path open).
-- Screen transitions, fades, palette animation, culling details.
+- Palette animation and renderer culling details beyond the runtime fade.
 
 ## M4-M7
 
@@ -74,5 +79,4 @@ Updated: M1/M2/M3 foundation session.
 1. Reverse event/NPC tables and dialogue-choice actions.
 2. Reverse character/item/equipment layout and trade/spell actions.
 3. Reverse battle setup/round tables and outcomes.
-4. Port the exact `FUN_2d65_2cd9` state loop.
-5. Per-scene audio cues, packaging polish, upscale.
+4. Per-scene audio cues, packaging polish, upscale.

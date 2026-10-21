@@ -1,7 +1,65 @@
 # Main loop and scene renderer
 
-Status: **structure confirmed** from `2d65:2cd9` and `2b79:0003`; individual
-subsystems remain unported.
+Status: **main-loop state machine ported** as `soe-engine::runtime::Runtime`.
+The scene renderer is still the static room compositor; animation frames,
+palette cycling and driver callback details remain open.
+
+## Runtime state machine (`FUN_2d65_2cd9`)
+
+`Runtime` owns the loaded `Session`, the current `Screen`, the original loop
+word and all menu selections. `soe-app` no longer keeps mode booleans; it maps
+platform input to `runtime::Key`, calls `Runtime::handle_key`/`handle_click`,
+and applies the returned `RuntimeEvent`s.
+
+The original word at `DS:01EC` is represented by `LoopState`:
+
+| word | `LoopState` | behaviour |
+|---:|---|---|
+| `-5` | `ExitToMenu` | tear down the view, then fall through to the menu |
+| `-4` | `GameLost` | show `GAMELOST`; confirm requests quit |
+| `-3` | `ScreenChange` | finish a deferred travel/map screen change |
+| `-2` | `Menu` | menu/idle frame; no room animation |
+| `-1` | `Playing` | normal play frame |
+| `>= 0` | `Playing` | original play frames (intro/room/menu modes) |
+
+`Runtime::state_code()` reports the canonical code and
+`LoopState::from_code` mirrors the original `>= -1` test. The code writers in
+the original were used to place the transitions: room entry sets `-1`,
+intro/room modes use `0`/`1`, travel/map interactions use `-3`, the
+game-lost path uses `-4`, and the post-combat return path uses `-5`.
+
+Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
+`Travel`, `Save`, `Pause`, `Action`, `Item`, `Target`, `GameLost`, `Quit`.
+
+### Transitions
+
+- `Room` -> `Map` with `M`; `Map` -> `Room` with `M`, `Esc` or `Enter`.
+- `Room` -> `Status` with `I`; `Status` -> `Room` with `I`, `Esc` or `Enter`.
+- `Room` -> `Story` with `H`; arrows/space/click page, `H`/`Esc` closes.
+- `Room` -> `Travel` with `T`; up/down selects, `Enter` enters the location's
+  scene through `-3`, then returns to `Room` when the fade completes.
+- `Room` -> `Save` with `S`; up/down selects, `Enter` loads, `F5` quick-saves,
+  `S`/`Esc` closes. Loading replaces the session and returns to `Room`.
+- `Room` -> `Pause` with `P`; any key resumes the room.
+- `Room` -> `Action` with `A`/`Enter`; actions Talk/Seize go to `Target`,
+  Pickup/Drop/Use go to `Item`. Target Talk opens `Story`, Target Give opens
+  `Item`, and cancel/confirm returns to `Room`.
+- `Room` left/right arrows or clicks change scene; `Space` advances one
+  animation frame. Animation ticks only run in `Room` while `-1`.
+- `GameLost` confirm requests quit. `return_to_menu()` enters `-5`; the next
+  `tick` resolves it to `-2`/`Menu`, and confirm starts `-1`/`Room`.
+
+`Runtime::tick` advances the fade and animations and resolves `-5` and `-3`.
+The presenter reads `Runtime::fade()`; all coordinates and clicks stay in
+logical 320x200 space.
+
+## Verification
+
+The live DOSBox-X save states were inspected only as a transition oracle, not
+added as fixtures or tests. They show normal play/game-over at the expected
+loop words, which matches the `>= 0` / `-1` play rule and the terminal `-4`
+path. State-transition tests use the headless runtime, plus one integration
+test that drives a real episode through map, status, pause, travel and save.
 
 ## Startup
 
@@ -13,12 +71,7 @@ latter:
 3. Sets the palette selector `DS:8E5D = 0x1FD9`, active buffer `DS:9BA0`.
 4. Registers driver entry points at `DS:8A43`, `DS:8AB6`, `DS:8E19`...
 5. Loads a save with `FUN_1a51_059d(DS:798E, DS:7990, DS:8E3D)`.
-6. Runs an infinite state loop on `DS:01EC`:
-   - `-5`: `FUN_1316_1143`, `FUN_2c74_0006(0)`, state becomes `-2`
-   - `-4`: "GAMELOST", `FUN_2c74_0c2e(0x0f)`, state becomes quit
-   - `-3`: `func_0x0003d651`
-   - `-1`/`-2`: normal frame tick / title or idle path
-   - otherwise: play/render frame.
+6. Runs the infinite state loop on `DS:01EC` described above.
 
 The VGA mode is set through the driver callback at `DS:8E65` (MCGA or EGA/Tandy
 variant).
