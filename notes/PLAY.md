@@ -54,6 +54,7 @@ Startup flags:
 --travel    start in the travel list
 --saves     start in the save/load browser
 --actions   start in the room action menu
+--items     start in the item-selection panel
 --paused    start with the pause panel open
 --save FILE load a specific .sav instead of EPISODE1.DAT
 ```
