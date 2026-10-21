@@ -66,6 +66,8 @@ Updated: M1/M2/M3 foundation session.
 - Audio: SMUS parser + OPL2/cpal map music implemented; per-scene cues and
   driver-exact instruments remain.
 - Packaging: release script and clean distribution folder implemented.
+- Action menu and item-selection panel implemented (UI only).
+- Battle unit record layout and battle UI code located; resolution pending.
 
 ## Next
 
