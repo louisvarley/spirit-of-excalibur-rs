@@ -56,5 +56,20 @@ data was resident.
   at a different render buffer, so use the `SCENES.RES` sequence to locate the
   live copy.
 - Scene 19 has no `700..799` or `900..999` objects, so no ANI frame bank was
-  resident. The FRML delta codec still needs a state captured in a room that
-  actually contains an animation id (for example scene 1, which has `908`).
+  resident.
+
+## `save-state-2.sav` (NPC dialogue)
+
+A later capture was taken with an NPC dialogue open in scene 5.
+
+- Rendered dialogue buffer at `0x34F23`:
+  `"These are strange times we live in."  rec b`
+- A source/runtime copy exists at `0x950E2`, followed by a small node table.
+- Live NPC character records are in memory around `0x2E800`:
+  `Palomides`, `Hebes`, `Lionel`, ... with the same 0x38-byte character shape
+  as the save file.
+- This confirms the dialogue text and NPC records are resident, but the
+  per-scene event/choice table that selects the line is still not mapped.
+
+FRML was already solved from the earlier room capture, so no further animation
+state is needed.
