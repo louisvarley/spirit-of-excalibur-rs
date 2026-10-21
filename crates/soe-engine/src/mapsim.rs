@@ -156,6 +156,15 @@ impl MapSim {
         self.entities.iter().find(|e| e.id() == u16::from(id))
     }
 
+    /// First party-side entity (character flag `0x200`).
+    #[must_use]
+    pub fn party(&self) -> Option<u8> {
+        self.entities
+            .iter()
+            .map(|e| e.id() as u8)
+            .find(|&id| word(&self.ds, name(id) + 0x16) & 0x200 != 0)
+    }
+
     /// Send character `id` towards `(x, y)`, as a map click does.
     pub fn set_target(&mut self, id: u8, x: i16, y: i16) -> bool {
         let Some(e) = self.entities.iter_mut().find(|e| e.id() == u16::from(id)) else {
@@ -385,5 +394,27 @@ mod tests {
             }
         }
         eprintln!("{rounds} rounds of {per_round} entities matched the original");
+    }
+}
+
+#[cfg(test)]
+mod real_data {
+    use super::*;
+
+    #[test]
+    fn builds_from_real_episode() {
+        let (Ok(exe), Ok(save)) = (
+            std::fs::read("../../ghidra/EXCAL_UNPACKED.EXE"),
+            std::fs::read("../../game/EPISODE1.DAT"),
+        ) else {
+            eprintln!("SKIP: game data absent");
+            return;
+        };
+        let ds = dgroup_from_exe(&exe).expect("dgroup");
+        assert!(TravelTables::from_dgroup(&ds).is_some(), "tables");
+        let tiles = vec![0u8; 72 * 60];
+        let sim = MapSim::new(ds, &save, &tiles, 72).expect("sim");
+        eprintln!("entities: {}", sim.entities().len());
+        assert!(!sim.entities().is_empty());
     }
 }

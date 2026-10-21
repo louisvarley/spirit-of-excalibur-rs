@@ -168,7 +168,8 @@ impl WorldMap {
         let frame = decode_image(&file, 501)?;
 
         let mut icons = HashMap::new();
-        for id in 600..=615 {
+        // 600..=615 location icons, 630..=690 character/army shields.
+        for id in (600..=615).chain(630..=690) {
             if let Ok(image) = decode_image(&file, id) {
                 icons.insert(id, image);
             }
@@ -252,6 +253,17 @@ impl WorldMap {
             }
         }
         Ok(frame)
+    }
+
+    /// Draw a map entity's icon centred on its world position, clipped to the
+    /// viewport (entities are drawn after the location markers).
+    pub fn draw_entity(&self, frame: &mut IndexedFrame, camera: (i32, i32), icon: u16, x: i16, y: i16) {
+        let Some(image) = self.icons.get(&icon) else {
+            return;
+        };
+        let left = i32::from(x) - camera.0 - i32::from(image.width) / 2;
+        let top = i32::from(y) - camera.1 - i32::from(image.height) / 2;
+        self.blit_marker(frame, image, left, top);
     }
 
     /// Hit-test a marker in logical screen coordinates.

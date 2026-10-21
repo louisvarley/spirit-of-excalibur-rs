@@ -16,6 +16,8 @@ use soe_video::{LOGICAL_WIDTH, PlanarImage};
 
 use crate::battle::{Battle, BattleOutcome, Order};
 use crate::economy::InventoryEntry;
+use crate::encounter::EncounterDialog;
+use crate::mapsim::{MapEvent, MapSim};
 use crate::interaction::{Dialogue, character_name};
 use crate::session::Session;
 use crate::story::HintBook;
@@ -59,6 +61,8 @@ pub enum Screen {
     Battle,
     /// Dialogue/event text with optional choices.
     Dialogue,
+    /// Map encounter dialog (`FUN_2920_0a12`).
+    Encounter,
     /// `GAMELOST` screen (original loop state `-4`).
     GameLost,
     /// The loop has been asked to terminate.
@@ -85,6 +89,7 @@ impl Screen {
             Self::Target => "SELECT TARGET",
             Self::Battle => "BATTLE",
             Self::Dialogue => "DIALOGUE",
+            Self::Encounter => "ENCOUNTER",
             Self::GameLost => "GAME LOST",
             Self::Quit => "QUIT",
         }
@@ -209,6 +214,11 @@ pub struct Runtime {
     dialogue: Option<Dialogue>,
     transition_remaining: Option<Duration>,
     animation_accum: Duration,
+    /// Live regional map while the map is open.
+    mapsim: Option<MapSim>,
+    map_accum: Duration,
+    encounter: Option<EncounterDialog>,
+    encounter_index: usize,
 }
 
 impl Runtime {
@@ -278,6 +288,10 @@ impl Runtime {
             dialogue: None,
             transition_remaining: None,
             animation_accum: Duration::ZERO,
+            mapsim: None,
+            map_accum: Duration::ZERO,
+            encounter: None,
+            encounter_index: 0,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
         runtime.sync_scene_index();
@@ -656,6 +670,234 @@ impl Runtime {
         self.screen = screen;
         self.select_current_location();
         self.center_map_on_selected();
+        self.ensure_mapsim();
+    }
+
+    /// Build the live map from the save state (`FUN_2d65_0d39`).
+    fn ensure_mapsim(&mut self) {
+        if self.mapsim.is_some() {
+            return;
+        }
+        let (Some(ds), Some(map)) = (self.session.dgroup(), &self.map) else {
+            return;
+        };
+        let save = self.session.state.to_bytes();
+        self.mapsim = MapSim::new(ds.to_vec(), &save, map.tilemap(), worldmap::TILES_W as u16);
+        self.map_accum = Duration::ZERO;
+    }
+
+    /// Write the live map (positions, targets, clock) back into the save
+    /// state and drop it.
+    fn commit_mapsim(&mut self) {
+        let Some(sim) = self.mapsim.take() else {
+            return;
+        };
+        let mut bytes = self.session.state.to_bytes();
+        sim.write_back(&mut bytes);
+        if let Ok(state) = crate::save::GameState::parse(&bytes) {
+            self.session.state = state;
+        }
+    }
+
+    /// Runtime id of the party's map entity: the selected character when it
+    /// is on the map, otherwise the first party-side (flag 0x200) entity.
+    fn party_id(&self) -> u8 {
+        let selected = u8::try_from(self.selected_character + 1).unwrap_or(1);
+        match &self.mapsim {
+            Some(sim) if sim.entity(selected).is_none() => sim.party().unwrap_or(selected),
+            _ => selected,
+        }
+    }
+
+    /// Map entities to draw: `(icon, world x, world y)`.
+    #[must_use]
+    pub fn map_entities(&self) -> Vec<(u16, i16, i16)> {
+        self.mapsim.as_ref().map_or_else(Vec::new, |sim| {
+            sim.entities()
+                .iter()
+                .filter(|e| e.0[0x26] & 0x80 == 0)
+                .map(|e| (sim.icon(e.id() as u8), e.x(), e.y()))
+                .collect()
+        })
+    }
+
+    /// The open encounter dialog and the highlighted button.
+    #[must_use]
+    pub fn encounter(&self) -> Option<(EncounterDialog, usize)> {
+        self.encounter.map(|d| (d, self.encounter_index))
+    }
+
+    /// Button labels of the open encounter, in order.
+    #[must_use]
+    pub fn encounter_buttons(&self) -> Vec<String> {
+        let Some(d) = self.encounter else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if d.talk {
+            out.push(format!(
+                "Stop to talk to {}",
+                encounter_noun(&self.session.state, d.second)
+            ));
+        }
+        if d.join {
+            out.push("Join Forces".to_string());
+        }
+        if d.choice {
+            out.push("Continue on".to_string());
+        }
+        out
+    }
+
+    /// Encounter sentence. The noun phrase builder `FUN_15b8_16fe` is not
+    /// ported yet; names and the "a " article are approximated.
+    #[must_use]
+    pub fn encounter_text(&self) -> String {
+        let Some(d) = self.encounter else {
+            return String::new();
+        };
+        let state = &self.session.state;
+        let first = character_name(state, usize::from(d.first).saturating_sub(1));
+        let plural = d.prefix & 2 != 0;
+        let mut text = format!(
+            "{first} encounter{} {}.",
+            if plural { "" } else { "s" },
+            encounter_noun(state, d.second)
+        );
+        if d.choice {
+            let pronoun = ["he", "she", "they", "they"][d.prefix & 3];
+            text.push_str(&format!("\nWhat shall {pronoun} do?"));
+        }
+        text
+    }
+
+    fn advance_map(&mut self, delta: Duration) -> Vec<RuntimeEvent> {
+        const ROUND: Duration = Duration::from_millis(40);
+        let id = self.party_id();
+        let Some(sim) = self.mapsim.as_ref() else {
+            return Vec::new();
+        };
+        if !sim.moving(id) {
+            self.map_accum = Duration::ZERO;
+            return Vec::new();
+        }
+        self.map_accum += delta;
+        let mut out = Vec::new();
+        while self.map_accum >= ROUND {
+            self.map_accum -= ROUND;
+            let Some(sim) = self.mapsim.as_mut() else {
+                break;
+            };
+            let events = sim.round();
+            if let Some(e) = sim.entity(id) {
+                self.map_camera = worldmap::camera_for(e.x() as u16, e.y() as u16);
+            }
+            for event in events {
+                match event {
+                    MapEvent::Arrived { id: who, location } if who == id => {
+                        self.map_accum = Duration::ZERO;
+                        let row = usize::from(location).wrapping_sub(1);
+                        if let Some(index) = self
+                            .map_markers()
+                            .iter()
+                            .position(|m| location != 0 && m.location_index == row)
+                        {
+                            self.travel_index = index;
+                            out.extend(self.travel_to_selected());
+                        }
+                        return out;
+                    }
+                    MapEvent::Encounter(dialog) => {
+                        self.encounter = Some(dialog);
+                        self.encounter_index = 0;
+                        self.screen = Screen::Encounter;
+                        self.map_accum = Duration::ZERO;
+                        out.push(RuntimeEvent::ScreenChanged(Screen::Encounter));
+                        return out;
+                    }
+                    MapEvent::Arrived { .. } => {}
+                }
+            }
+        }
+        out
+    }
+
+    /// Send the party to the selected marker; enter it at once when the party
+    /// is already there or the live map is unavailable.
+    fn travel_request(&mut self) -> Vec<RuntimeEvent> {
+        let markers = self.map_markers();
+        let Some(marker) = markers.get(self.travel_index).cloned() else {
+            return Vec::new();
+        };
+        if self.current_location == Some(marker.location_index) || self.mapsim.is_none() {
+            return self.travel_to_selected();
+        }
+        let id = self.party_id();
+        let started = self
+            .mapsim
+            .as_mut()
+            .is_some_and(|sim| sim.set_target(id, marker.world_x as i16, marker.world_y as i16));
+        if started {
+            self.current_location = None;
+            Vec::new()
+        } else {
+            self.travel_to_selected()
+        }
+    }
+
+    fn handle_encounter_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
+        let count = self.encounter_buttons().len();
+        match key {
+            Key::Up | Key::Left => {
+                self.encounter_index = self.encounter_index.saturating_sub(1);
+                Vec::new()
+            }
+            Key::Down | Key::Right => {
+                self.encounter_index = (self.encounter_index + 1).min(count.saturating_sub(1));
+                Vec::new()
+            }
+            Key::Confirm | Key::Space => self.activate_encounter(self.encounter_index),
+            Key::Cancel => self.activate_encounter(count.saturating_sub(1)),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Logical layout of the encounter buttons: `(x, y, width)` per row.
+    #[must_use]
+    pub fn encounter_button_rects(&self) -> Vec<(i16, i16, i16)> {
+        (0..self.encounter_buttons().len())
+            .map(|i| (40, 34 + 16 * i as i16, 200))
+            .collect()
+    }
+
+    fn activate_encounter(&mut self, index: usize) -> Vec<RuntimeEvent> {
+        let Some(dialog) = self.encounter.take() else {
+            return Vec::new();
+        };
+        let mut kinds = Vec::new();
+        if dialog.talk {
+            kinds.push("talk");
+        }
+        if dialog.join {
+            kinds.push("join");
+        }
+        if dialog.choice {
+            kinds.push("continue");
+        }
+        self.screen = Screen::Map;
+        match kinds.get(index).copied() {
+            Some("talk") => {
+                self.commit_mapsim();
+                let target = usize::from(dialog.second).saturating_sub(1);
+                if self.talk_to(target) {
+                    return vec![RuntimeEvent::ScreenChanged(Screen::Dialogue)];
+                }
+                self.ensure_mapsim();
+            }
+            Some("join") => self.notice = "Join Forces is not ported yet.".to_string(),
+            _ => {}
+        }
+        vec![RuntimeEvent::ScreenChanged(Screen::Map)]
     }
 
     fn select_current_location(&mut self) {
@@ -1007,6 +1249,9 @@ impl Runtime {
                 }
             }
             LoopState::Playing => {
+                if matches!(self.screen, Screen::Map | Screen::Travel) {
+                    events.extend(self.advance_map(delta));
+                }
                 if self.screen == Screen::Room && self.session.animation_count() > 0 {
                     self.animation_accum += delta;
                     let ticks = (self.animation_accum.as_micros() / TICK.as_micros())
@@ -1054,6 +1299,7 @@ impl Runtime {
                 vec![RuntimeEvent::ScreenChanged(Screen::Room)]
             }
             Screen::Map | Screen::Travel => self.handle_map_key(key),
+            Screen::Encounter => self.handle_encounter_key(key),
             Screen::Status => match key {
                 Key::Status | Key::Cancel => {
                     self.close_modal();
@@ -1285,6 +1531,7 @@ impl Runtime {
     fn handle_map_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
         match key {
             Key::Map | Key::Travel | Key::Cancel => {
+                self.commit_mapsim();
                 self.close_modal();
                 vec![RuntimeEvent::ScreenChanged(Screen::Room)]
             }
@@ -1296,7 +1543,7 @@ impl Runtime {
                 self.move_travel(1);
                 Vec::new()
             }
-            Key::Confirm | Key::Space => self.travel_to_selected(),
+            Key::Confirm | Key::Space => self.travel_request(),
             _ => Vec::new(),
         }
     }
@@ -1369,6 +1616,15 @@ impl Runtime {
                 Vec::new()
             }
             Screen::Map | Screen::Travel => self.click_map(x, y),
+            Screen::Encounter => {
+                let hit = self.encounter_button_rects().iter().position(|&(bx, by, bw)| {
+                    (bx..bx + bw).contains(&x) && (by..by + 12).contains(&y)
+                });
+                match hit {
+                    Some(index) => self.activate_encounter(index),
+                    None => Vec::new(),
+                }
+            }
             Screen::Status => {
                 self.move_character(if left { -1 } else { 1 });
                 Vec::new()
@@ -1448,8 +1704,7 @@ impl Runtime {
             .position(|marker| marker.location_index == location)
         {
             self.travel_index = index;
-            self.center_map_on_selected();
-            return self.travel_to_selected();
+            return self.travel_request();
         }
         Vec::new()
     }
@@ -1679,6 +1934,7 @@ impl Runtime {
     }
 
     fn travel_to_selected(&mut self) -> Vec<RuntimeEvent> {
+        self.commit_mapsim();
         let markers = self.map_markers();
         let Some(marker) = markers.get(self.travel_index).cloned() else {
             return Vec::new();
@@ -2192,5 +2448,16 @@ mod tests {
         assert_eq!(runtime.session().state.characters[0].armor(), 15);
         assert!(runtime.session().state.spells(0).is_empty());
         assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+}
+
+/// Name of character `id` (1-based) for encounter text, with the article the
+/// original's `FUN_15b8_16fe` adds for common folk (approximation).
+fn encounter_noun(state: &crate::save::GameState, id: u8) -> String {
+    let name = character_name(state, usize::from(id).saturating_sub(1));
+    if name.chars().next().is_some_and(char::is_lowercase) {
+        format!("a {name}")
+    } else {
+        name
     }
 }

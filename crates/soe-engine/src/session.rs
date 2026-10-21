@@ -72,6 +72,8 @@ pub struct Session {
     pub frame: IndexedFrame,
     font: Option<BitmapFont>,
     window_style: Option<WindowStyle>,
+    /// EXE DGROUP image (initialised data) for the ported map code.
+    dgroup: Option<Vec<u8>>,
     static_images: std::collections::HashMap<u16, soe_video::PlanarImage>,
     animations: std::collections::HashMap<u16, Vec<soe_video::PlanarImage>>,
     animation_frame: usize,
@@ -99,6 +101,7 @@ impl Session {
             frame: IndexedFrame::black(),
             font: None,
             window_style: None,
+            dgroup: None,
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
@@ -138,9 +141,9 @@ impl Session {
 
         let palettes = PaletteSet::load(&exe).unwrap_or_else(|_| PaletteSet::black());
         let font = load_font(&mut resources, exe.as_ref());
-        let window_style = std::fs::read(exe.as_ref())
-            .ok()
-            .and_then(|bytes| WindowStyle::from_exe(&bytes));
+        let exe_bytes = std::fs::read(exe.as_ref()).ok();
+        let window_style = exe_bytes.as_deref().and_then(WindowStyle::from_exe);
+        let dgroup = exe_bytes.as_deref().and_then(crate::mapsim::dgroup_from_exe);
 
         let mut session = Self {
             game_dir,
@@ -157,6 +160,7 @@ impl Session {
             frame: IndexedFrame::black(),
             font,
             window_style,
+            dgroup,
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
@@ -255,6 +259,12 @@ impl Session {
         let mut files = crate::files::CaseInsensitiveDir::new(dir.as_ref());
         files.write(name, &self.state.to_bytes())?;
         Ok(())
+    }
+
+    /// The EXE's DGROUP image, when the EXE was readable.
+    #[must_use]
+    pub fn dgroup(&self) -> Option<&[u8]> {
+        self.dgroup.as_deref()
     }
 
     /// Dialog window tables (`DS:5D62`, `DS:1F4D`), when the EXE was readable.

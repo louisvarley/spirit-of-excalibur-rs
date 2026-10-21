@@ -107,18 +107,24 @@ impl App {
     fn compose_frame(&self) -> (IndexedFrame, Vec<[u8; 3]>) {
         let screen = self.runtime.screen();
 
-        let mut display = if matches!(screen, Screen::Map | Screen::Travel) {
+        let mut display = if matches!(screen, Screen::Map | Screen::Travel | Screen::Encounter) {
             let palette = &self.runtime.session().palettes().regional_map();
             let markers = self.runtime.map_markers();
+            let camera = self.runtime.map_camera();
             self.runtime.map().and_then(|map| {
-                map.render(
-                    palette,
-                    self.runtime.map_camera(),
-                    &markers,
-                    self.runtime.selected_location(),
-                    self.runtime.current_location(),
-                )
-                .ok()
+                let mut frame = map
+                    .render(
+                        palette,
+                        camera,
+                        &markers,
+                        self.runtime.selected_location(),
+                        self.runtime.current_location(),
+                    )
+                    .ok()?;
+                for (icon, x, y) in self.runtime.map_entities() {
+                    map.draw_entity(&mut frame, camera, icon, x, y);
+                }
+                Some(frame)
             })
         } else {
             None
@@ -317,12 +323,19 @@ impl App {
                 draw_game_lost(&mut copy, self.runtime.session());
                 display = Some(copy);
             }
+            Screen::Encounter => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_encounter(&mut copy, &self.runtime);
+                display = Some(copy);
+            }
             Screen::Room | Screen::Quit => {}
         }
 
         let session = self.runtime.session();
         let frame = display.unwrap_or_else(|| session.frame.clone());
-        let palette = if matches!(screen, Screen::Map | Screen::Travel) {
+        let palette = if matches!(screen, Screen::Map | Screen::Travel | Screen::Encounter) {
             session.palettes().regional_map().colors
         } else {
             session.scene_palette().colors.clone()
@@ -819,6 +832,42 @@ fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], sel
     );
 }
 
+/// Map encounter dialog (`FUN_2920_0a12` -> `FUN_1772_000e`): stone window at
+/// (10, 5), the sentence, then the outlined buttons.
+fn draw_encounter(frame: &mut IndexedFrame, runtime: &Runtime) {
+    let session = runtime.session();
+    let Some(font) = session.font() else {
+        return;
+    };
+    let buttons = runtime.encounter_buttons();
+    let rects = runtime.encounter_button_rects();
+    let selected = runtime.encounter().map_or(0, |(_, index)| index);
+    let height = rects.last().map_or(40, |&(_, y, _)| i32::from(y) + 12);
+    let (ox, oy) = match runtime.panel() {
+        Some(panel) => draw_panel(frame, session, panel, 8, 5, 0x10e + 0x20, height),
+        None => {
+            fill_rect(frame, 0, 0, 320, height as u16 + 5, 0);
+            (16, 10)
+        }
+    };
+    for (line, text) in runtime.encounter_text().split('\n').enumerate() {
+        font.draw_text(frame, ox, oy + line as i32 * 10, text, None);
+    }
+    let label_width = buttons
+        .iter()
+        .map(|label| font.text_width(label))
+        .max()
+        .unwrap_or(0) as u16;
+    for (index, (label, &(x, y, _))) in buttons.iter().zip(&rects).enumerate() {
+        let (x, y) = (i32::from(x) + 3, i32::from(y) + 2);
+        font.draw_text(frame, x, y, label, None);
+        if let (Some(style), Some(sheet)) = (session.window_style(), runtime.panel()) {
+            let ops = style.button(x as i16, y as i16, label_width, index == selected);
+            draw_window_ops(frame, sheet, 0, 0, &ops);
+        }
+    }
+}
+
 fn draw_world_map(
     frame: &mut IndexedFrame,
     session: &Session,
@@ -1278,6 +1327,27 @@ fn main() -> Result<()> {
     if args.iter().any(|arg| arg == "--battle") {
         if !runtime.start_demo_battle() {
             eprintln!("no army records available for a battle");
+        }
+    }
+
+    // Scripted travel for screenshots: select map marker K, start the
+    // journey, then advance N 40 ms steps.
+    let arg_value = |name: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == name)
+            .and_then(|pair| pair[1].parse::<usize>().ok())
+    };
+    if let Some(marker) = arg_value("--travel-to") {
+        for _ in 0..marker {
+            runtime.handle_key(Key::Down);
+        }
+        runtime.handle_key(Key::Confirm);
+    }
+    if let Some(steps) = arg_value("--ticks") {
+        for _ in 0..steps {
+            for event in runtime.tick(Duration::from_millis(40)) {
+                eprintln!("{event:?}");
+            }
         }
     }
 
