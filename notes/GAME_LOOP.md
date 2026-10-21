@@ -30,7 +30,7 @@ game-lost path uses `-4`, and the post-combat return path uses `-5`.
 
 Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
 `Travel`, `Save`, `Pause`, `Action`, `Item`, `Spell`, `Shop`, `Target`,
-`Dialogue`, `GameLost`, `Quit`.
+`Battle`, `Dialogue`, `GameLost`, `Quit`.
 
 ### Transitions
 
@@ -55,6 +55,10 @@ Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
   save state; cancel returns to `Room`.
 - `Room` left/right arrows or clicks change scene; `Space` advances one
   animation frame. Animation ticks only run in `Room` while `-1`.
+- `Battle` is entered through `Runtime::start_battle` / `start_demo_battle`
+  (`soe-play --battle`). Up/Down selects an order, Enter resolves it, Esc
+  withdraws. A terminal outcome writes casualties into the save records,
+  emits `BattleEnded` and returns to `Screen::Map`.
 - `GameLost` confirm requests quit. `return_to_menu()` enters `-5`; the next
   `tick` resolves it to `-2`/`Menu`, and confirm starts `-1`/`Room`.
 

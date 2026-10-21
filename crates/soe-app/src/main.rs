@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 mod audio;
 
 use anyhow::{Context, Result};
+use soe_engine::battle::{Battle, Order};
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
@@ -83,6 +84,7 @@ impl App {
                 RuntimeEvent::Loaded(name) => eprintln!("loaded {name}"),
                 RuntimeEvent::ScreenChanged(_)
                 | RuntimeEvent::SceneChanged(_)
+                | RuntimeEvent::BattleEnded(_)
                 | RuntimeEvent::GameLost
                 | RuntimeEvent::MenuEntered => {}
             }
@@ -282,6 +284,17 @@ impl App {
                     self.runtime.panel(),
                     self.runtime.target_index(),
                     &self.runtime.target_names(),
+                );
+                display = Some(copy);
+            }
+            Screen::Battle => {
+                let mut copy = self.runtime.session().frame.clone();
+                draw_battle(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.battle(),
+                    self.runtime.battle_order_index(),
+                    self.runtime.battle_orders(),
                 );
                 display = Some(copy);
             }
@@ -1085,6 +1098,117 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, not
     }
 }
 
+fn draw_battle(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    battle: Option<&Battle>,
+    selected: usize,
+    orders: &[Order],
+) {
+    fill_rect(frame, 0, 0, 320, 200, 7);
+    let Some(font) = session.font() else {
+        return;
+    };
+    fill_rect(frame, 0, 0, 320, 13, 0);
+    let Some(battle) = battle else {
+        font.draw_text(frame, 118, 90, "NO BATTLE", Some(0));
+        return;
+    };
+
+    let (left_title, right_title) = if battle.alternate_orders {
+        ("DEFENDER...", "CHALLENGER...")
+    } else {
+        ("ROUND TABLE...", "FOES...")
+    };
+    font.draw_text(frame, 4, 3, left_title, Some(7));
+    font.draw_text(frame, 132, 3, &format!("ROUND {}", battle.round), Some(7));
+    font.draw_text(frame, 232, 3, right_title, Some(7));
+
+    for (row, unit) in battle.player.iter().take(12).enumerate() {
+        let y = 18 + row as i32 * 8;
+        let color = if unit.is_routed() { 4 } else { 0 };
+        let marker = if unit.is_routed() { "x" } else { " " };
+        font.draw_text(
+            frame,
+            4,
+            y,
+            &format!("{marker}{}", truncate(&unit.display(), 14)),
+            Some(color),
+        );
+    }
+    for (row, unit) in battle.foe.iter().take(12).enumerate() {
+        let y = 18 + row as i32 * 8;
+        let color = if unit.is_routed() { 4 } else { 0 };
+        let marker = if unit.is_routed() { "x" } else { " " };
+        font.draw_text(
+            frame,
+            226,
+            y,
+            &format!("{marker}{}", truncate(&unit.display(), 12)),
+            Some(color),
+        );
+    }
+
+    for (index, order) in orders.iter().enumerate() {
+        let y = 18 + index as i32 * 10;
+        if index == selected {
+            fill_rect(frame, 118, (y - 1) as u16, 90, 9, 0);
+            font.draw_text(frame, 122, y, order.label(), Some(7));
+        } else {
+            font.draw_text(frame, 122, y, order.label(), Some(0));
+        }
+    }
+
+    font.draw_text(
+        frame,
+        118,
+        90,
+        &format!(
+            "MEN {}   FOE {}",
+            battle.total_strength(soe_engine::battle::Side::Player),
+            battle.total_strength(soe_engine::battle::Side::Foe)
+        ),
+        Some(0),
+    );
+
+    fill_rect(frame, 118, 102, 196, 56, 2);
+    fill_rect(frame, 118, 102, 196, 1, 0);
+    fill_rect(frame, 118, 157, 196, 1, 0);
+    fill_rect(frame, 118, 102, 1, 56, 0);
+    fill_rect(frame, 313, 102, 1, 56, 0);
+    for (index, unit) in battle.player.iter().take(12).enumerate() {
+        if unit.is_routed() {
+            continue;
+        }
+        let x = 126 + (index % 3) as u16 * 7;
+        let y = 108 + (index / 3) as u16 * 11;
+        fill_rect(frame, x, y, 2, 3, 8);
+    }
+    for (index, unit) in battle.foe.iter().take(12).enumerate() {
+        if unit.is_routed() {
+            continue;
+        }
+        let x = 300 - (index % 3) as u16 * 7;
+        let y = 108 + (index / 3) as u16 * 11;
+        fill_rect(frame, x, y, 2, 3, 12);
+    }
+
+    fill_rect(frame, 0, 163, 320, 37, 0);
+    let start = battle.messages.len().saturating_sub(3);
+    for (row, message) in battle.messages[start..].iter().enumerate() {
+        font.draw_text(
+            frame,
+            6,
+            167 + row as i32 * 10,
+            &truncate(message, 50),
+            Some(7),
+        );
+    }
+    if let Some(outcome) = battle.outcome {
+        font.draw_text(frame, 250, 3, outcome.label(), Some(12));
+    }
+}
+
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         text.to_string()
@@ -1203,6 +1327,11 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--paused") {
         runtime.open_screen(Screen::Pause);
+    }
+    if args.iter().any(|arg| arg == "--battle") {
+        if !runtime.start_demo_battle() {
+            eprintln!("no army records available for a battle");
+        }
     }
 
     let event_loop = EventLoop::new().context("creating event loop")?;

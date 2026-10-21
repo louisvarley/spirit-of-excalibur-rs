@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use soe_engine::battle::BattleOutcome;
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen, TRANSITION};
 use soe_engine::save::GameState;
 use soe_engine::session::Session;
@@ -130,6 +131,97 @@ fn provided_room_saves_parse_with_event_tables() {
         assert_eq!(state.to_bytes(), data, "{name} round-trip");
         assert_eq!(state.characters.len(), 92, "{name} includes NPC slots");
     }
+}
+
+fn configure_battle_character(
+    state: &mut GameState,
+    index: usize,
+    name: &str,
+    max_strength: u16,
+    current_strength: u16,
+    hp: u8,
+    attack: u8,
+    defence: u8,
+) {
+    use soe_engine::save::Character;
+    let character = &mut state.characters[index];
+    character.set_name(name);
+    character.raw[Character::MAX_STRENGTH..Character::MAX_STRENGTH + 2]
+        .copy_from_slice(&max_strength.to_le_bytes());
+    character.raw[Character::CURRENT_STRENGTH..Character::CURRENT_STRENGTH + 2]
+        .copy_from_slice(&current_strength.to_le_bytes());
+    character.raw[Character::BATTLE_HP] = hp;
+    character.raw[Character::BATTLE_SKILL] = attack;
+    character.raw[Character::BATTLE_DEFENCE] = defence;
+}
+
+#[test]
+fn battle_runs_multiple_rounds_and_returns_to_map_with_casualties() {
+    let mut runtime = Runtime::headless(Vec::new(), 0);
+    {
+        let state = &mut runtime.session_mut().state;
+        configure_battle_character(state, 0, "Constantine", 100, 100, 5, 100, 5);
+        configure_battle_character(state, 1, "Bedivere", 80, 80, 4, 80, 4);
+        configure_battle_character(state, 70, "Melehan", 1, 1, 1, 5, 1);
+        configure_battle_character(state, 71, "soldier", 50, 50, 2, 8, 1);
+    }
+
+    assert!(runtime.start_battle_with_seed(&[0, 1], &[70, 71], 5));
+    assert_eq!(runtime.screen(), Screen::Battle);
+    let mut rounds = 0;
+    while runtime.screen() == Screen::Battle && rounds < 40 {
+        runtime.handle_key(Key::Confirm);
+        rounds += 1;
+    }
+    assert!(rounds >= 2, "battle should need more than one pass");
+    assert_eq!(runtime.last_battle_outcome(), Some(BattleOutcome::Victory));
+    assert_eq!(runtime.screen(), Screen::Map);
+    assert_eq!(runtime.state_code(), -1);
+
+    let foe_strength = runtime.session().state.characters[71].current_strength();
+    assert!(foe_strength < 50, "battle casualties were not persisted");
+
+    let temp = std::env::temp_dir().join(format!("soe-battle-{}", std::process::id()));
+    std::fs::create_dir_all(&temp).unwrap();
+    runtime.session().save_to(&temp, "BATTLE.SAV").unwrap();
+    let saved = std::fs::read(temp.join("BATTLE.SAV")).unwrap();
+    let state = GameState::parse(&saved).unwrap();
+    assert_eq!(state.characters[71].current_strength(), foe_strength);
+    std::fs::remove_dir_all(&temp).ok();
+}
+
+#[test]
+fn demo_battle_starts_from_a_real_save() {
+    let Some(mut runtime) = example_runtime() else {
+        return;
+    };
+    assert!(runtime.start_demo_battle(), "no armies were selected");
+    assert_eq!(runtime.screen(), Screen::Battle);
+    let battle = runtime.battle().expect("battle open");
+    assert!(!battle.player.is_empty());
+    assert!(!battle.foe.is_empty());
+    assert_eq!(battle.round, 0);
+}
+
+#[test]
+fn withdrawing_from_battle_returns_to_map() {
+    let mut runtime = Runtime::headless(Vec::new(), 0);
+    {
+        let state = &mut runtime.session_mut().state;
+        configure_battle_character(state, 0, "Constantine", 100, 100, 5, 50, 5);
+        configure_battle_character(state, 70, "soldier", 50, 50, 2, 8, 1);
+    }
+    assert!(runtime.start_battle_with_seed(&[0], &[70], 9));
+    runtime.handle_key(Key::Cancel);
+    assert_eq!(
+        runtime.last_battle_outcome(),
+        Some(BattleOutcome::Withdrawn)
+    );
+    assert_eq!(runtime.screen(), Screen::Map);
+    assert_eq!(
+        runtime.session().state.characters[0].current_strength(),
+        100
+    );
 }
 
 fn game_dir() -> &'static Path {

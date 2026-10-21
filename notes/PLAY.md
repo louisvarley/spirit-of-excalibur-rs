@@ -58,6 +58,7 @@ Startup flags:
 --actions   start in the room action menu
 --items     start in the item-selection panel
 --paused    start with the pause panel open
+--battle    open the demo army battle from the current save
 --save FILE load a specific .sav instead of EPISODE1.DAT
 ```
 

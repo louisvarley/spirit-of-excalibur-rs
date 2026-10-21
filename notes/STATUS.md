@@ -1,6 +1,6 @@
 # STATUS
 
-Updated: graphical regional map and travel.
+Updated: army battle loop (orders, rounds, casualties, return to map).
 
 ## Read this first
 
@@ -51,6 +51,10 @@ Updated: graphical regional map and travel.
   Status/items/spells/trade are live interactive screens.
 - State-transition unit tests, economy tests for every action, interaction
   tests, plus integration tests over real saves/episodes.
+- Army battle: verified 0x38-byte strength/HP fields, Round Table/Foes and
+  Defender/Challenger UI state, six captured orders plus the alternate set,
+  round damage/casualties, victory/defeat/withdrawal, write-back to the save
+  records and return to the regional map. See `notes/COMBAT.md`.
 
 ## M1 remaining
 
@@ -80,14 +84,16 @@ Updated: graphical regional map and travel.
   Per-scene trigger visibility and some event side effects remain open.
 - Inventory/economy/magic/trade: implemented; exact price bargaining and a few
   object flag bits remain approximate.
-- Combat: not started; battle tables/formulas not reversed.
+- Combat: headless loop implemented. Encounter-table setup, exact AI target
+  choice, magic absorption and loot drops remain approximate/open.
 - Audio: SMUS parser + OPL2/cpal map music implemented; per-scene cues and
   driver-exact instruments remain.
 - Packaging: release script and clean distribution folder implemented.
-- Battle unit record layout and battle UI code located; resolution pending.
+- Battle unit record layout, UI code and round/outcome loop are implemented;
+  see `notes/COMBAT.md`.
 
 ## Next
 
 1. Finish per-scene event triggers and remaining dialogue side effects.
-2. Reverse battle setup/round tables and outcomes.
+2. Reach the battle from the event/encounter table (the loop itself is ported).
 3. Per-scene audio cues, packaging polish, upscale.

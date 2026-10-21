@@ -73,6 +73,16 @@ impl Character {
     pub const GOLD: usize = 0x32;
     /// Runtime presence bits (`+0x16`, file `+0x20`). Bit 0x08 is "in scene".
     pub const PRESENCE: usize = 0x20;
+    /// Maximum/starting army strength, verified from the battle records.
+    pub const MAX_STRENGTH: usize = 0x26;
+    /// Current army strength, reduced by battle casualties.
+    pub const CURRENT_STRENGTH: usize = 0x28;
+    /// Battle defence field (`name + 0x2B`) used by `FUN_20b5_1dff`.
+    pub const BATTLE_DEFENCE: usize = 0x35;
+    /// Battle hit points (`name + 0x2C`) used by `FUN_20b5_1dff`.
+    pub const BATTLE_HP: usize = 0x36;
+    /// Battle attack skill (`name + 0x2D`) used by `FUN_20b5_1dff`.
+    pub const BATTLE_SKILL: usize = 0x37;
 
     #[must_use]
     pub fn name(&self) -> String {
@@ -155,6 +165,58 @@ impl Character {
     #[must_use]
     pub fn presence_flags(&self) -> u16 {
         u16::from_le_bytes([self.raw[Self::PRESENCE], self.raw[Self::PRESENCE + 1]])
+    }
+
+    pub fn set_presence_flags(&mut self, value: u16) {
+        let [lo, hi] = value.to_le_bytes();
+        self.raw[Self::PRESENCE] = lo;
+        self.raw[Self::PRESENCE + 1] = hi;
+    }
+
+    /// Maximum/starting army strength at `+0x26`.
+    #[must_use]
+    pub fn max_strength(&self) -> u16 {
+        u16::from_le_bytes([
+            self.raw[Self::MAX_STRENGTH],
+            self.raw[Self::MAX_STRENGTH + 1],
+        ])
+    }
+
+    /// Current army strength at `+0x28`.
+    #[must_use]
+    pub fn current_strength(&self) -> u16 {
+        u16::from_le_bytes([
+            self.raw[Self::CURRENT_STRENGTH],
+            self.raw[Self::CURRENT_STRENGTH + 1],
+        ])
+    }
+
+    pub fn set_current_strength(&mut self, value: u16) {
+        let [lo, hi] = value.to_le_bytes();
+        self.raw[Self::CURRENT_STRENGTH] = lo;
+        self.raw[Self::CURRENT_STRENGTH + 1] = hi;
+    }
+
+    /// Battle hit points at `+0x36` (`name + 0x2C`).
+    #[must_use]
+    pub fn battle_hp(&self) -> u8 {
+        self.raw[Self::BATTLE_HP]
+    }
+
+    pub fn set_battle_hp(&mut self, value: u8) {
+        self.raw[Self::BATTLE_HP] = value;
+    }
+
+    /// Battle defence at `+0x35` (`name + 0x2B`).
+    #[must_use]
+    pub fn battle_defence(&self) -> u8 {
+        self.raw[Self::BATTLE_DEFENCE]
+    }
+
+    /// Battle attack skill at `+0x37` (`name + 0x2D`).
+    #[must_use]
+    pub fn battle_skill(&self) -> u8 {
+        self.raw[Self::BATTLE_SKILL]
     }
 
     /// Current world X (`+0x2A` in the save record).

@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use soe_video::{LOGICAL_WIDTH, PlanarImage};
 
+use crate::battle::{Battle, BattleOutcome, Order};
 use crate::economy::InventoryEntry;
 use crate::interaction::{Dialogue, character_name};
 use crate::session::Session;
@@ -54,6 +55,8 @@ pub enum Screen {
     Shop,
     /// Target character selection panel.
     Target,
+    /// Army battle screen.
+    Battle,
     /// Dialogue/event text with optional choices.
     Dialogue,
     /// `GAMELOST` screen (original loop state `-4`).
@@ -80,6 +83,7 @@ impl Screen {
             Self::Spell => "SPELLS",
             Self::Shop => "TRADE",
             Self::Target => "SELECT TARGET",
+            Self::Battle => "BATTLE",
             Self::Dialogue => "DIALOGUE",
             Self::GameLost => "GAME LOST",
             Self::Quit => "QUIT",
@@ -161,6 +165,7 @@ pub enum RuntimeEvent {
     SceneChanged(u16),
     Saved(String),
     Loaded(String),
+    BattleEnded(BattleOutcome),
     GameLost,
     MenuEntered,
     Error(String),
@@ -194,6 +199,9 @@ pub struct Runtime {
     target_action: usize,
     selected_character: usize,
     target_character: usize,
+    battle: Option<Battle>,
+    battle_order_index: usize,
+    last_battle_outcome: Option<BattleOutcome>,
     shop_index: usize,
     shop_sell: bool,
     shop_seller: Option<usize>,
@@ -260,6 +268,9 @@ impl Runtime {
             target_action: 0,
             selected_character,
             target_character: selected_character,
+            battle: None,
+            battle_order_index: 0,
+            last_battle_outcome: None,
             shop_index: 0,
             shop_sell: false,
             shop_seller: None,
@@ -462,6 +473,29 @@ impl Runtime {
         self.dialogue.as_ref()
     }
 
+    #[must_use]
+    pub fn battle(&self) -> Option<&Battle> {
+        self.battle.as_ref()
+    }
+
+    #[must_use]
+    pub fn battle_order_index(&self) -> usize {
+        self.battle_order_index
+    }
+
+    /// Orders shown by the battle screen.
+    #[must_use]
+    pub fn battle_orders(&self) -> &'static [Order] {
+        self.battle
+            .as_ref()
+            .map_or(&crate::battle::BATTLE_ORDERS, Battle::orders)
+    }
+
+    #[must_use]
+    pub const fn last_battle_outcome(&self) -> Option<BattleOutcome> {
+        self.last_battle_outcome
+    }
+
     /// Display name of the character whose action menu is open.
     #[must_use]
     pub fn actor_name(&self) -> String {
@@ -600,6 +634,15 @@ impl Runtime {
             Screen::Target => {
                 self.open_target(0);
             }
+            Screen::Battle => {
+                if self.battle.is_none() {
+                    let _ = self.start_demo_battle();
+                } else {
+                    self.state = LoopState::Playing;
+                    self.screen = Screen::Battle;
+                    self.battle_order_index = 0;
+                }
+            }
             _ => {
                 self.state = LoopState::Playing;
                 self.screen = screen;
@@ -676,6 +719,188 @@ impl Runtime {
         self.target_index = 0;
         self.target_action = action;
         self.update_target_character();
+    }
+
+    /// Start a battle from save-state character indices (0-based). Returns
+    /// false when either side has no named records.
+    pub fn start_battle(&mut self, player: &[usize], foe: &[usize]) -> bool {
+        self.start_battle_with_seed(player, foe, battle_seed())
+    }
+
+    /// Start a battle with an explicit RNG seed for reproducible tests.
+    pub fn start_battle_with_seed(&mut self, player: &[usize], foe: &[usize], seed: u32) -> bool {
+        let Some(battle) = Battle::from_state(&self.session.state, player, foe, seed) else {
+            self.notice = "No army is ready for battle.".to_string();
+            return false;
+        };
+        self.battle = Some(battle);
+        self.battle_order_index = 0;
+        self.last_battle_outcome = None;
+        self.notice.clear();
+        self.state = LoopState::Playing;
+        self.screen = Screen::Battle;
+        self.transition_remaining = None;
+        true
+    }
+
+    /// Open the captured Round Table/Foes battle with the live save state.
+    /// This is the temporary entry point until the encounter/event table is
+    /// reversed; the battle engine itself only needs record indices.
+    pub fn start_demo_battle(&mut self) -> bool {
+        let characters = &self.session.state.characters;
+        let mut foe = Vec::new();
+        if let Some(start) = characters
+            .iter()
+            .position(|character| character.name().eq_ignore_ascii_case("Melehan"))
+        {
+            foe.push(start);
+            for (index, character) in characters.iter().enumerate().skip(start + 1) {
+                if foe.len() >= 4 {
+                    break;
+                }
+                if !character.name().is_empty()
+                    && character.max_strength() > 1
+                    && character.current_strength() > 0
+                {
+                    foe.push(index);
+                }
+            }
+        } else {
+            for (index, character) in characters.iter().enumerate().rev() {
+                if foe.len() >= 4 {
+                    break;
+                }
+                if !character.name().is_empty()
+                    && character.max_strength() > 1
+                    && character.current_strength() > 0
+                {
+                    foe.push(index);
+                }
+            }
+        }
+        if foe.is_empty() {
+            for (index, character) in characters.iter().enumerate().rev() {
+                if foe.len() >= 4 {
+                    break;
+                }
+                if !character.name().is_empty() {
+                    foe.push(index);
+                }
+            }
+        }
+
+        let mut player = Vec::new();
+        for (index, character) in characters.iter().enumerate() {
+            if player.len() >= 10 {
+                break;
+            }
+            if character.name().is_empty() || foe.contains(&index) {
+                continue;
+            }
+            if character.max_strength() <= 1 && (character.is_present() || index == 0) {
+                player.push(index);
+            }
+        }
+        for (index, character) in characters.iter().enumerate() {
+            if player.len() >= 18 {
+                break;
+            }
+            if character.name().is_empty()
+                || character.max_strength() <= 1
+                || character.current_strength() == 0
+                || foe.contains(&index)
+                || player.contains(&index)
+            {
+                continue;
+            }
+            player.push(index);
+        }
+        if player.is_empty() {
+            if let Some(index) = characters
+                .iter()
+                .position(|character| !character.name().is_empty())
+            {
+                player.push(index);
+            }
+        }
+        self.start_battle_with_seed(&player, &foe, battle_seed())
+    }
+
+    fn handle_battle_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
+        let Some(order_count) = self.battle.as_ref().map(|battle| battle.orders().len()) else {
+            self.screen = Screen::Room;
+            return vec![RuntimeEvent::ScreenChanged(Screen::Room)];
+        };
+        if order_count == 0 {
+            return Vec::new();
+        }
+        match key {
+            Key::Up | Key::Left => {
+                self.battle_order_index = (self.battle_order_index + order_count - 1) % order_count;
+                Vec::new()
+            }
+            Key::Down | Key::Right => {
+                self.battle_order_index = (self.battle_order_index + 1) % order_count;
+                Vec::new()
+            }
+            Key::Confirm | Key::Space | Key::Cancel => {
+                let order = if key == Key::Cancel {
+                    Order::Retreat
+                } else {
+                    let Some(battle) = self.battle.as_ref() else {
+                        return Vec::new();
+                    };
+                    battle.orders()[self.battle_order_index.min(order_count - 1)]
+                };
+                let finished = {
+                    let Some(battle) = self.battle.as_mut() else {
+                        return Vec::new();
+                    };
+                    match order {
+                        Order::Retreat | Order::Withdraw => battle.withdraw(),
+                        Order::Automatic => {
+                            battle.set_player_order(Order::Engage);
+                            battle.auto_resolve();
+                        }
+                        Order::Ignore => {}
+                        _ => {
+                            battle.set_player_order(order);
+                            battle.resolve_round();
+                        }
+                    }
+                    battle.is_over()
+                };
+                if finished {
+                    let mut events = Vec::new();
+                    self.finish_battle(&mut events);
+                    events
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn finish_battle(&mut self, events: &mut Vec<RuntimeEvent>) {
+        let Some(battle) = self.battle.take() else {
+            return;
+        };
+        let outcome = battle.outcome.unwrap_or(BattleOutcome::Withdrawn);
+        battle.apply_to_state(&mut self.session.state);
+        self.last_battle_outcome = Some(outcome);
+        self.notice = match outcome {
+            BattleOutcome::Victory => "The foe is routed. The army returns to the map.".to_string(),
+            BattleOutcome::Defeat => "The army is routed and falls back to the map.".to_string(),
+            BattleOutcome::Withdrawn => "The army withdraws to the map.".to_string(),
+        };
+        self.battle_order_index = 0;
+        self.screen = Screen::Map;
+        self.state = LoopState::Playing;
+        self.refresh_location_from_party();
+        self.start_transition();
+        events.push(RuntimeEvent::BattleEnded(outcome));
+        events.push(RuntimeEvent::ScreenChanged(Screen::Map));
     }
 
     /// Select a room character and open their action menu (`FUN_1ba8_4604`).
@@ -1016,6 +1241,7 @@ impl Runtime {
                 }
                 _ => Vec::new(),
             },
+            Screen::Battle => self.handle_battle_key(key),
             Screen::Target => match key {
                 Key::Cancel | Key::Action => {
                     self.close_modal();
@@ -1160,6 +1386,14 @@ impl Runtime {
                 self.shop_sell = left;
                 self.shop_index = 0;
                 self.clamp_shop_index();
+                Vec::new()
+            }
+            Screen::Battle => {
+                let count = self.battle_orders().len();
+                if count > 0 {
+                    let row = usize::try_from((i32::from(y) - 18).max(0) / 10).unwrap_or(0);
+                    self.battle_order_index = row.min(count - 1);
+                }
                 Vec::new()
             }
             Screen::Target => {
@@ -1530,6 +1764,15 @@ impl Runtime {
             Err(error) => vec![RuntimeEvent::Error(format!("quick save: {error}"))],
         }
     }
+}
+
+fn battle_seed() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(1, |duration| {
+            u32::try_from(duration.as_nanos() & u128::from(u32::MAX)).unwrap_or(1) | 1
+        })
 }
 
 fn list_saves(game_dir: &Path) -> Vec<String> {

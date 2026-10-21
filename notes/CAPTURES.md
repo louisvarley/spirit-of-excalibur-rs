@@ -88,3 +88,28 @@ A later capture was taken with an NPC dialogue open in scene 5.
 
 FRML was already solved from the earlier room capture, so no further animation
 state is needed.
+
+## Battle save states
+
+User-supplied DOSBox-X states (not committed):
+
+- `save-state-before-battle-starts.sav`, `start of battle.sav`
+- `battle-ongoing-with-casulties.sav`
+- `battle-losses-are-heavy.sav`
+- `battle-won-returned-to-map.sav`
+
+They use the same DGROUP base (`0x2B8F0`). The battle lists are at `DS:9DC2`
+(player) and `DS:9DD6` (foe), with counts at `DS:9DAC` / `DS:9DAD`. Entries are
+1-based character record indices, so `DS:9DC2` starts `00 01 11 02 ...` =
+character 0 (`Constantine`), character 16 (`Baudwin`), character 1
+(`Bedivere`), ....
+
+The live records confirm the casualty fields (`+0x26` maximum, `+0x28` current
+strength) and the battle order/status bytes (`+0x35..+0x37`). The ongoing and
+heavy-loss states show the same units with reduced `+0x28`; the returned-to-map
+state has the post-battle strengths and the party back on the map. See
+`notes/COMBAT.md` for the ported model.
+
+Battle screenshots (`smaller-battle.png`, `smaller-battle-2.png`,
+`battle-continued.png`, `battle-losses.png`) confirm the Round Table/Foes and
+Defender/Challenger layouts and the captured order column.
