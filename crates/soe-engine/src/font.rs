@@ -23,6 +23,11 @@ use soe_video::{IndexedFrame, PlanarImage};
 /// Metric word: `src_x = word & 0x3FF`, bit 10 = right overhang, bit 11 =
 /// left overhang, `width = word >> 12`. Advance is
 /// `width + spacing - bit10 - bit11`.
+/// Atlas index of the glyph body in `TITLE.RES#200`.
+const ATLAS_STROKE: u8 = 2;
+/// Atlas index of the light drop highlight under each stroke.
+const ATLAS_HIGHLIGHT: u8 = 6;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitmapFont {
     pub width: u16,
@@ -140,12 +145,17 @@ impl BitmapFont {
                         continue;
                     }
                     let pixel = self.pixels[(row * atlas_width + sx) as usize];
-                    if pixel != 0 {
-                        frame.set_pixel(
-                            (start_x + col) as u16,
-                            (baseline + row) as u16,
-                            color.unwrap_or(pixel),
-                        );
+                    // The atlas carries its own shading: stroke 2, edges 3/4,
+                    // highlight 6. A solid colour recolours the stroke and edges and drops the
+                    // highlight so
+                    // the shading does not thicken the glyph on a flat ground.
+                    let out = match color {
+                        None if pixel != 0 => Some(pixel),
+                        Some(color) if pixel != 0 && pixel != ATLAS_HIGHLIGHT => Some(color),
+                        _ => None,
+                    };
+                    if let Some(out) = out {
+                        frame.set_pixel((start_x + col) as u16, (baseline + row) as u16, out);
                     }
                 }
             }
@@ -302,9 +312,9 @@ mod tests {
     #[test]
     fn draws_from_atlas_and_metrics() {
         let mut indices = vec![0u8; 16 * 10];
-        indices[2] = 7;
-        indices[3] = 7;
-        indices[4] = 7;
+        indices[2] = ATLAS_STROKE;
+        indices[3] = ATLAS_STROKE;
+        indices[4] = ATLAS_STROKE;
         let atlas = PlanarImage {
             width: 16,
             height: 10,
@@ -320,9 +330,9 @@ mod tests {
         assert_eq!(frame.pixel(11, 20), Some(5));
         assert_eq!(frame.pixel(12, 20), Some(5));
         font.draw_text(&mut frame, 10, 20, " ", None);
-        assert_eq!(frame.pixel(10, 20), Some(7));
+        assert_eq!(frame.pixel(10, 20), Some(ATLAS_STROKE));
         font.draw_text(&mut frame, 10, 40, " \n ", None);
-        assert_eq!(frame.pixel(10, 51), Some(7));
+        assert_eq!(frame.pixel(10, 51), Some(ATLAS_STROKE));
     }
 
     #[test]

@@ -108,7 +108,7 @@ impl App {
         let screen = self.runtime.screen();
 
         let mut display = if matches!(screen, Screen::Map | Screen::Travel) {
-            let palette = &self.runtime.session().palettes().room;
+            let palette = &self.runtime.session().palettes().regional_map();
             let markers = self.runtime.map_markers();
             self.runtime.map().and_then(|map| {
                 map.render(
@@ -323,7 +323,7 @@ impl App {
         let session = self.runtime.session();
         let frame = display.unwrap_or_else(|| session.frame.clone());
         let palette = if matches!(screen, Screen::Map | Screen::Travel) {
-            session.palettes().room.colors.clone()
+            session.palettes().regional_map().colors
         } else {
             session.scene_palette().colors.clone()
         };
