@@ -139,6 +139,12 @@ impl MapSim {
         self.ds[CLOCK..CLOCK + 4].copy_from_slice(&v.to_le_bytes());
     }
 
+    /// The live DGROUP image (save state plus EXE data).
+    #[must_use]
+    pub fn ds(&self) -> &[u8] {
+        &self.ds
+    }
+
     #[must_use]
     pub fn entities(&self) -> &[MapEntity] {
         &self.entities

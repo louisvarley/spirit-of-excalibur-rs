@@ -730,15 +730,12 @@ impl Runtime {
     /// Button labels of the open encounter, in order.
     #[must_use]
     pub fn encounter_buttons(&self) -> Vec<String> {
-        let Some(d) = self.encounter else {
+        let (Some(d), Some(sim)) = (self.encounter, &self.mapsim) else {
             return Vec::new();
         };
         let mut out = Vec::new();
         if d.talk {
-            out.push(format!(
-                "Stop to talk to {}",
-                encounter_noun(&self.session.state, d.second)
-            ));
+            out.push(crate::names::talk_label(sim.ds(), d.second));
         }
         if d.join {
             out.push("Join Forces".to_string());
@@ -749,26 +746,13 @@ impl Runtime {
         out
     }
 
-    /// Encounter sentence. The noun phrase builder `FUN_15b8_16fe` is not
-    /// ported yet; names and the "a " article are approximated.
+    /// Encounter sentence, as the original formats it.
     #[must_use]
     pub fn encounter_text(&self) -> String {
-        let Some(d) = self.encounter else {
-            return String::new();
-        };
-        let state = &self.session.state;
-        let first = character_name(state, usize::from(d.first).saturating_sub(1));
-        let plural = d.prefix & 2 != 0;
-        let mut text = format!(
-            "{first} encounter{} {}.",
-            if plural { "" } else { "s" },
-            encounter_noun(state, d.second)
-        );
-        if d.choice {
-            let pronoun = ["he", "she", "they", "they"][d.prefix & 3];
-            text.push_str(&format!("\nWhat shall {pronoun} do?"));
+        match (self.encounter, &self.mapsim) {
+            (Some(d), Some(sim)) => crate::names::encounter_sentence(sim.ds(), &d),
+            _ => String::new(),
         }
-        text
     }
 
     fn advance_map(&mut self, delta: Duration) -> Vec<RuntimeEvent> {
@@ -2448,16 +2432,5 @@ mod tests {
         assert_eq!(runtime.session().state.characters[0].armor(), 15);
         assert!(runtime.session().state.spells(0).is_empty());
         assert_ne!(runtime.session().state.to_bytes(), before);
-    }
-}
-
-/// Name of character `id` (1-based) for encounter text, with the article the
-/// original's `FUN_15b8_16fe` adds for common folk (approximation).
-fn encounter_noun(state: &crate::save::GameState, id: u8) -> String {
-    let name = character_name(state, usize::from(id).saturating_sub(1));
-    if name.chars().next().is_some_and(char::is_lowercase) {
-        format!("a {name}")
-    } else {
-        name
     }
 }
