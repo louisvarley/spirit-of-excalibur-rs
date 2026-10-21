@@ -48,6 +48,9 @@ struct App {
     story_page: usize,
     travel_mode: bool,
     travel_index: usize,
+    save_mode: bool,
+    save_files: Vec<String>,
+    save_index: usize,
 }
 
 impl App {
@@ -64,6 +67,7 @@ impl App {
         start_status: bool,
         start_story: bool,
     ) -> Self {
+        let save_files = list_saves(&game_dir);
         Self {
             window: None,
             context: None,
@@ -86,6 +90,9 @@ impl App {
             story_page: 0,
             travel_mode: false,
             travel_index: 0,
+            save_mode: false,
+            save_files,
+            save_index: 0,
         }
     }
 
@@ -129,11 +136,38 @@ impl App {
         self.update_title();
     }
 
+    fn save_quick(&mut self) {
+        if let Err(error) = self.session.save_to(&self.game_dir, "QUICK.SAV") {
+            eprintln!("quick save: {error}");
+        } else {
+            self.save_files = list_saves(&self.game_dir);
+            if let Some(index) = self.save_files.iter().position(|name| name == "QUICK.SAV") {
+                self.save_index = index;
+            }
+        }
+    }
+
+    fn load_save_selected(&mut self) {
+        let Some(name) = self.save_files.get(self.save_index).cloned() else {
+            return;
+        };
+        match Session::load_save(&self.game_dir, &self.exe, self.session.scene_id, &name) {
+            Ok(session) => {
+                self.session = session;
+                self.save_mode = false;
+                self.update_title();
+            }
+            Err(error) => eprintln!("load {name}: {error}"),
+        }
+    }
+
     fn update_title(&self) {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.travel_mode {
+        let mode = if self.save_mode {
+            "SAVES".to_string()
+        } else if self.travel_mode {
             "TRAVEL".to_string()
         } else if self.story_mode {
             "CHRONICLE".to_string()
@@ -152,7 +186,7 @@ impl App {
             )
         };
         window.set_title(&format!(
-            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  H chronicle  P pause  F5 save  F9 load  Esc quit"
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  S saves  H chronicle  P pause  Esc quit"
         ));
     }
 
@@ -210,6 +244,11 @@ impl App {
         if self.travel_mode {
             let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
             draw_travel(&mut copy, &self.session, self.travel_index);
+            display = Some(copy);
+        }
+        if self.save_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_saves(&mut copy, &self.session, &self.save_files, self.save_index);
             display = Some(copy);
         }
 
@@ -322,6 +361,27 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                if self.save_mode {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyS) => {
+                            self.save_mode = false;
+                            self.update_title();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.save_index = self.save_index.saturating_sub(1);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            if !self.save_files.is_empty() {
+                                self.save_index =
+                                    (self.save_index + 1).min(self.save_files.len() - 1);
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Enter) => self.load_save_selected(),
+                        PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
+                        _ => {}
+                    }
+                    return;
+                }
                 if self.travel_mode {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
@@ -390,11 +450,12 @@ impl ApplicationHandler for App {
                         self.travel_mode = true;
                         self.update_title();
                     }
-                    PhysicalKey::Code(KeyCode::F5) => {
-                        if let Err(error) = self.session.save_to(&self.game_dir, "QUICK.SAV") {
-                            eprintln!("quick save: {error}");
-                        }
+                    PhysicalKey::Code(KeyCode::KeyS) => {
+                        self.save_files = list_saves(&self.game_dir);
+                        self.save_mode = true;
+                        self.update_title();
                     }
+                    PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
                     PhysicalKey::Code(KeyCode::F9) => {
                         match Session::load_save(
                             &self.game_dir,
@@ -506,6 +567,42 @@ fn draw_story(
         174,
         &format!("{}/{}", index + 1, story.paragraphs.len()),
         Some(color),
+    );
+}
+
+fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], selected: usize) {
+    fill_rect(frame, 0, 0, 320, 200, 0);
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 8, 6, "SAVE / LOAD", Some(8));
+    font.draw_text(frame, 8, 20, "ENTER LOAD  F5 QUICK SAVE  S CLOSE", Some(8));
+    if files.is_empty() {
+        font.draw_text(frame, 8, 40, "NO .SAV FILES", Some(8));
+        return;
+    }
+    let selected = selected.min(files.len() - 1);
+    let page = selected / 13;
+    for row in 0..13 {
+        let index = page * 13 + row;
+        let Some(name) = files.get(index) else {
+            break;
+        };
+        let marker = if index == selected { "*" } else { " " };
+        font.draw_text(
+            frame,
+            8,
+            36 + row as i32 * 12,
+            &format!("{marker}{name}"),
+            Some(8),
+        );
+    }
+    font.draw_text(
+        frame,
+        220,
+        188,
+        &format!("PAGE {}/{}", page + 1, files.len().div_ceil(13)),
+        Some(8),
     );
 }
 
@@ -743,6 +840,22 @@ fn fill_rect(frame: &mut IndexedFrame, x: u16, y: u16, width: u16, height: u16, 
     }
 }
 
+fn list_saves(game_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(game_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".sav"))
+        .map(|name| name.to_ascii_uppercase())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn load_record_image(path: &Path, id: u16) -> Result<soe_video::PlanarImage> {
     let file = soe_res::ResFile::parse(
         std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
@@ -840,6 +953,7 @@ fn main() -> Result<()> {
     );
     app.paused = paused;
     app.travel_mode = args.iter().any(|arg| arg == "--travel");
+    app.save_mode = args.iter().any(|arg| arg == "--saves");
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }

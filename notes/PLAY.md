@@ -36,6 +36,7 @@ The process needs the original game files; they remain git-ignored.
 | M | toggle the world-map screen |
 | H | open the story/hint chronicle (arrows/click page, H closes) |
 | T | travel list (up/down select, Enter go, T closes) |
+| S | save/load browser (Enter load, F5 quick-save, S close) |
 | P | pause / close the pause panel |
 | F5 | quick-save to `QUICK.SAV` |
 | F9 | quick-load from `QUICK.SAV` |
@@ -49,6 +50,7 @@ Startup flags:
 --status    start in status view
 --story     start in the story/hint chronicle
 --travel    start in the travel list
+--saves     start in the save/load browser
 --paused    start with the pause panel open
 --save FILE load a specific .sav instead of EPISODE1.DAT
 ```
