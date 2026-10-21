@@ -60,6 +60,9 @@ pub enum Screen {
     Target,
     /// Army battle screen.
     Battle,
+    /// Single combat in the field scene, run on the original scene engine
+    /// ([`crate::duel`]); any key returns to the map once it is over.
+    Duel,
     /// Dialogue/event text with optional choices.
     Dialogue,
     /// Map encounter dialog (`FUN_2920_0a12`).
@@ -91,6 +94,7 @@ impl Screen {
             Self::Shop => "TRADE",
             Self::Target => "SELECT TARGET",
             Self::Battle => "BATTLE",
+            Self::Duel => "SINGLE COMBAT",
             Self::Dialogue => "DIALOGUE",
             Self::Encounter => "ENCOUNTER",
             Self::MapMessage => "MAP",
@@ -232,6 +236,10 @@ pub struct Runtime {
     /// final mode to carry out.
     fight: Option<FightSetup>,
     pending_battle: Option<u16>,
+    duel: Option<crate::duel::Duel>,
+    duel_accum: Duration,
+    /// Room scene to restore after the duel's field scene.
+    duel_return_scene: Option<u16>,
     /// Champions of a single combat (`DS:9C4E` / `DS:9C4F`).
     pending_pair: Option<(u8, u8)>,
 }
@@ -312,6 +320,9 @@ impl Runtime {
             pending_lost: false,
             fight: None,
             pending_battle: None,
+            duel: None,
+            duel_accum: Duration::ZERO,
+            duel_return_scene: None,
             pending_pair: None,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
@@ -506,6 +517,55 @@ impl Runtime {
     #[must_use]
     pub fn dialogue(&self) -> Option<&Dialogue> {
         self.dialogue.as_ref()
+    }
+
+    #[must_use]
+    pub fn duel(&self) -> Option<&crate::duel::Duel> {
+        self.duel.as_ref()
+    }
+
+    /// The duel screen: the field scene with the champions drawn over it.
+    #[must_use]
+    pub fn duel_frame(&self) -> Option<soe_video::IndexedFrame> {
+        Some(self.session.compose_duel(self.duel.as_ref()?))
+    }
+
+    /// Start single combat between two characters (1-based ids) on the live
+    /// map state. Returns false when there is no live map.
+    pub fn start_duel(&mut self, mine: u8, theirs: u8) -> bool {
+        self.ensure_mapsim();
+        let Some(ds) = self.mapsim.as_ref().map(|sim| sim.ds().to_vec()) else {
+            return false;
+        };
+        // Field type 73 (grassland), as in the recorded duel; the original
+        // picks it from the terrain under the champion (FUN_2d65_13e2,
+        // not ported yet).
+        let duel = crate::duel::Duel::start(&ds, self.session.resources_mut(), mine, theirs, 73, battle_seed());
+        self.duel_return_scene = Some(self.session.scene_id);
+        let _ = self.session.enter_scene(duel.scene_id);
+        self.duel = Some(duel);
+        self.duel_accum = Duration::ZERO;
+        self.state = LoopState::Playing;
+        self.screen = Screen::Duel;
+        self.transition_remaining = None;
+        true
+    }
+
+    /// Leave a finished duel: keep its character records (hit points,
+    /// deaths) in the live map and go back to the map.
+    fn end_duel(&mut self) -> Vec<RuntimeEvent> {
+        let Some(duel) = self.duel.take() else {
+            return Vec::new();
+        };
+        const RECORDS: std::ops::Range<usize> = 0x2c5e..0x2c5e + 0x5e * 0x38;
+        if let Some(sim) = self.mapsim.as_mut() {
+            sim.ds_mut()[RECORDS].copy_from_slice(&duel.ds()[RECORDS]);
+        }
+        if let Some(scene) = self.duel_return_scene.take() {
+            let _ = self.session.enter_scene(scene);
+        }
+        self.screen = Screen::Map;
+        vec![RuntimeEvent::ScreenChanged(Screen::Map)]
     }
 
     #[must_use]
@@ -938,6 +998,23 @@ impl Runtime {
                 (vec![usize::from(mine) - 1], vec![usize::from(theirs) - 1])
             })
         };
+        if mode & 0x10 == 0 {
+            if let Some((a, b)) = pair {
+                let party = |id: u8| {
+                    self.mapsim.as_ref().is_some_and(|sim| {
+                        u16::from_le_bytes([
+                            sim.ds()[0x2c5e + usize::from(id) * 0x38 + 0x16],
+                            sim.ds()[0x2c5e + usize::from(id) * 0x38 + 0x17],
+                        ]) & 0x200
+                            != 0
+                    })
+                };
+                let (mine, theirs) = if party(b) && !party(a) { (b, a) } else { (a, b) };
+                if self.start_duel(mine, theirs) {
+                    return vec![RuntimeEvent::ScreenChanged(Screen::Duel)];
+                }
+            }
+        }
         let Some((player, foe)) = sides else {
             return Vec::new();
         };
@@ -1418,6 +1495,16 @@ impl Runtime {
                 if matches!(self.screen, Screen::Map | Screen::Travel) {
                     events.extend(self.advance_map(delta));
                 }
+                if self.screen == Screen::Duel {
+                    // The scene clock runs at 60 Hz.
+                    self.duel_accum += delta;
+                    let tick = Duration::from_micros(1_000_000 / u64::from(crate::duel::CLOCK_HZ));
+                    let ticks = (self.duel_accum.as_micros() / tick.as_micros()).min(600) as u32;
+                    self.duel_accum = self.duel_accum.saturating_sub(tick * ticks);
+                    if let Some(duel) = self.duel.as_mut() {
+                        duel.advance(ticks, self.session.resources_mut());
+                    }
+                }
                 if self.screen == Screen::Room && self.session.animation_count() > 0 {
                     self.animation_accum += delta;
                     let ticks = (self.animation_accum.as_micros() / TICK.as_micros())
@@ -1655,6 +1742,13 @@ impl Runtime {
                 _ => Vec::new(),
             },
             Screen::Battle => self.handle_battle_key(key),
+            Screen::Duel => {
+                if self.duel.as_ref().is_some_and(crate::duel::Duel::finished) {
+                    self.end_duel()
+                } else {
+                    Vec::new()
+                }
+            }
             Screen::Target => match key {
                 Key::Cancel | Key::Action => {
                     self.close_modal();
@@ -2625,9 +2719,11 @@ mod single_combat_tests {
     use std::path::Path;
 
     /// Single combat (mode 1, as the original starts for Constantine meeting
-    /// Lupinus) opens the battle screen with just the two champions.
+    /// Lupinus) runs as a duel in the field scene on the original scene
+    /// engine, and any key after it ends returns to the map with the
+    /// result kept.
     #[test]
-    fn single_combat_uses_battle_screen_with_champions() {
+    fn single_combat_runs_a_duel_and_returns_to_map() {
         let game = Path::new("../../game");
         let exe = Path::new("../../ghidra/EXCAL_UNPACKED.EXE");
         if !game.join("EPISODE1.DAT").exists() || !exe.exists() {
@@ -2640,10 +2736,21 @@ mod single_combat_tests {
         runtime.open_screen(Screen::Map);
         runtime.pending_pair = Some((62, 1));
         let events = runtime.start_pending_battle(1);
-        assert_eq!(events, vec![RuntimeEvent::ScreenChanged(Screen::Battle)]);
-        let battle = runtime.battle().expect("battle");
-        let names = |units: &[crate::battle::BattleUnit]| units.iter().map(|u| u.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(&battle.player), vec!["Constantine"]);
-        assert_eq!(names(&battle.foe), vec!["Lupinus"]);
+        assert_eq!(events, vec![RuntimeEvent::ScreenChanged(Screen::Duel)]);
+        let duel = runtime.duel().expect("duel");
+        assert_eq!(duel.champions, [1, 62]);
+        assert!(runtime.duel_frame().is_some());
+        for _ in 0..600 {
+            runtime.tick(Duration::from_millis(100));
+            if runtime.duel().is_some_and(crate::duel::Duel::finished) {
+                break;
+            }
+        }
+        assert!(runtime.duel().is_some_and(crate::duel::Duel::finished), "duel ended within a minute");
+        let hp = |rt: &Runtime, id: usize| rt.mapsim.as_ref().unwrap().ds()[0x2c5e + id * 0x38 + 0x2c];
+        let loser_hp = runtime.duel().map(|d| d.hit_points(62).min(d.hit_points(1))).unwrap();
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Map);
+        assert_eq!(hp(&runtime, 1).min(hp(&runtime, 62)), loser_hp, "result kept on the map");
     }
 }

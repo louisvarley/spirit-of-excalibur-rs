@@ -73,6 +73,84 @@ pub trait CombatWorld {
     fn location_of(&self, ds: &[u8], id: u8) -> u8;
 }
 
+/// Opcode 7 of `FUN_20b5_1dff` (`20b5:2769`): the battle starts. Once per
+/// battle (`DS:5E37` != 1, then incremented) it advances the actor, shows
+/// the battle panel (`FUN_15b8_09f7(0x31E)`, `FUN_20b5_085b`: returned as
+/// [`CombatEvent::BattleStart`]) and message `0x621D`, clears the slot
+/// flags (`DS:9C82` party, `DS:9C96` foes), and sends the two champions
+/// (slots `DS:9C52`/`9C53`, ids `DS:9C4E`/`9C4F`) at each other: script
+/// step 6, timer 0, `+2E` = the other. In an army fight (`DS:9C56` bit 0)
+/// whose meeting pair includes a champion, the remaining living units
+/// (character flag 8) are paired off in list order. If party slot 0 is
+/// still free, its unit goes to step 0x14.
+fn fun_20b5_2769(scene: &mut crate::script::ScriptScene, ds: &mut [u8]) -> (u8, Vec<CombatEvent>) {
+    let mut ev = Vec::new();
+    if ds[0x5e37] == 1 {
+        return (2, ev);
+    }
+    ds[0x5e37] = ds[0x5e37].wrapping_add(1);
+    let cur = scene.current as usize;
+    scene.widgets[cur][0x27] = scene.widgets[cur][0x27].wrapping_add(1);
+    ev.push(CombatEvent::BattleStart);
+    ev.push(CombatEvent::Message(0x621d));
+    for i in 0..usize::from(ds[0x9dac]) {
+        ds[SLOTS + i] = 0;
+    }
+    for i in 0..usize::from(ds[0x9dad]) {
+        ds[0x9c96 + i] = 0;
+    }
+    let alive = |ds: &[u8], id: u8| word(ds, rec(id) + 0x16) & 8 != 0;
+    let send = |scene: &mut crate::script::ScriptScene, at: usize, step: u8, target: Option<u8>| {
+        let w = &mut scene.widgets[at];
+        w[0x27] = step;
+        set_timer(w, 0);
+        if let Some(t) = target {
+            w[0x2e..0x30].copy_from_slice(&u16::from(t).to_le_bytes());
+        }
+    };
+    for (slot, other) in [(ds[0x9c52], ds[0x9c4f]), (ds[0x9c53], ds[0x9c4e])] {
+        ds[SLOTS + usize::from(slot)] = 1;
+        let id = ds[0x9dc3 + usize::from(slot)];
+        if let Some(at) = scene.find(0x200, 0, u16::from(id)) {
+            send(scene, at, 6, Some(other));
+        }
+    }
+    if word(ds, 0x9c56) & 1 != 0 && (ds[0x9dae] == ds[0x9c4e] || ds[0x9db0] == ds[0x9c4f]) {
+        let (mut i, mut j) = (0usize, 0usize);
+        while usize::from(ds[0x9dac]) > i && usize::from(ds[0x9dad]) > j {
+            if ds[SLOTS + i] != 0 || ds[0x9c96 + j] != 0 {
+                i += 1;
+                continue;
+            }
+            ds[SLOTS + i] = 1;
+            let a = ds[0x9dc3 + i];
+            let Some(at) = scene.find(0x200, 0, u16::from(a)) else { continue };
+            if !alive(ds, a) {
+                continue;
+            }
+            let b = ds[0x9dd7 + j];
+            send(scene, at, 6, Some(b));
+            ds[0x9c96 + j] = 1;
+            let Some(bt) = scene.find(0x200, 0, u16::from(b)) else { continue };
+            if !alive(ds, b) {
+                continue;
+            }
+            send(scene, bt, 6, Some(a));
+            i += 1;
+            j += 1;
+        }
+    }
+    if ds[SLOTS] == 0 {
+        let a = ds[0x9dc3];
+        if let Some(at) = scene.find(0x200, 0, u16::from(a)) {
+            if alive(ds, a) {
+                send(scene, at, 0x14, None);
+            }
+        }
+    }
+    (0, ev)
+}
+
 /// Script handler 15 (installed in `DS:0389` at run time): run
 /// [`fun_20b5_1dff`] for the scene's current widget against the widget
 /// `FUN_15b8_16ca(0x200, 0, actor[+0x2E])` finds. A widget targeting itself
@@ -85,6 +163,9 @@ pub fn script_hook(
     world: &mut impl CombatWorld,
 ) -> (u8, Vec<CombatEvent>) {
     let cur = scene.current as usize;
+    if op >> 8 == 7 {
+        return fun_20b5_2769(scene, ds);
+    }
     let tid = ww(&scene.widgets[cur], 0x2e);
     let target = scene.find(0x200, 0, tid).filter(|&t| t != cur);
     match target {

@@ -48,6 +48,8 @@ pub mod battle;
 pub mod smus;
 
 pub mod window;
+
+pub mod duel;
 pub mod travel;
 pub mod encounter;
 pub mod mapsim;

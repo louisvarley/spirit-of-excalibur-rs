@@ -235,6 +235,25 @@ impl Session {
         self.frame = frame;
     }
 
+    /// The current scene with the duel's widgets drawn over it, back to
+    /// front: each sprite is frame `frame` of its `ANI.RES` bank with its
+    /// top-left at the widget position, mirrored when the widget is.
+    #[must_use]
+    pub fn compose_duel(&self, duel: &crate::duel::Duel) -> soe_video::IndexedFrame {
+        let mut frame = self.frame.clone();
+        for sprite in duel.sprites() {
+            let Some(image) = duel
+                .bank(sprite.resource)
+                .and_then(|data| FrameBank::parse(data).ok())
+                .and_then(|bank| bank.frame_image(usize::from(sprite.frame & 0x7f)))
+            else {
+                continue;
+            };
+            crate::room::blit_transparent(&mut frame, &image, i32::from(sprite.x), i32::from(sprite.y), sprite.mirrored);
+        }
+        frame
+    }
+
     /// Advance every animation by one frame and re-render.
     pub fn advance_animation_frame(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);

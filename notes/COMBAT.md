@@ -247,3 +247,28 @@ calling `combat::fun_20b5_1dff`. The interpreter itself is already ported
   `FUN_15b8_17e0` advances it.
 - Note for recorders: the stack segment lies inside DGROUP's 64 KB
   (SS:SP = DS:9E90+SP in the duel), so DGROUP diffs must skip the stack.
+
+## Duel in the Rust build (2026-10-21)
+
+Single combat opens `Screen::Duel` (`soe-engine::duel`, `soe-play --duel A B`).
+The duel runs on the ported scene engine over the live map's DGROUP. Its
+backdrop is the field scene (`FUN_2b79_0ea5`: field types 0x3D and up map
+through `DS:72EA`, so type 73 gives `SCENES.RES` 907). Each champion is
+drawn as an `ANI.RES` frame at its widget position. When the duel ends, any
+key copies the character records back to the map.
+
+- Opcode 7 of `FUN_20b5_1dff` (`20b5:2769`, battle start) is now ported in
+  `combat::script_hook`, because it pairs the champions inside the scene: it
+  sets the slots, script step 6 and timer 0, and points each `+2E` at the
+  other. The pairing was found by watching writes to `+2E` from `duel.snap`.
+- Approximations, all noted in `duel.rs`:
+  - Field type 73 is fixed; the terrain rule of `FUN_2d65_13e2` isn't ported.
+  - The room builder isn't ported, so the field scene's army soldiers are drawn.
+  - No colour remap from widget `+0C` (Lupinus should be black).
+  - No rout check.
+  - Message names are filled in by rule.
+  - The duel ends on the death, concede, withdraw or flee message, because
+    `FUN_20b5_1057` and unit removal aren't ported.
+  - The host clock advances one tick per 4,096 reads within a frame, so
+    `066a`'s deadline still trips.
+  - The random generator is a stand-in.

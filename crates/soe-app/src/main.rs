@@ -301,6 +301,12 @@ impl App {
                 );
                 display = Some(copy);
             }
+            Screen::Duel => {
+                if let Some(mut copy) = self.runtime.duel_frame() {
+                    draw_duel(&mut copy, self.runtime.session(), self.runtime.panel(), self.runtime.duel());
+                    display = Some(copy);
+                }
+            }
             Screen::Dialogue => {
                 let mut copy = display
                     .take()
@@ -1131,6 +1137,34 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, not
     }
 }
 
+/// The duel's battle panel over the field scene, laid out like the
+/// original's: the two sides' champions and the latest message.
+fn draw_duel(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    duel: Option<&soe_engine::duel::Duel>,
+) {
+    let Some(duel) = duel else {
+        return;
+    };
+    panel_or_fill(frame, session, panel, 86);
+    let Some(font) = session.font() else {
+        return;
+    };
+    let name = |id: u8| session.dgroup().map(|_| soe_engine::names::display_name(duel.ds(), id)).unwrap_or_default();
+    font.draw_text(frame, 78, 6, "ROUND TABLE...", None);
+    font.draw_text(frame, 84, 15, &name(duel.champions[0]), None);
+    font.draw_text(frame, 190, 6, "FOES...", None);
+    font.draw_text(frame, 196, 15, &name(duel.champions[1]), None);
+    if let Some(message) = duel.messages.last() {
+        font.draw_text(frame, 24, 70, message, None);
+    }
+    if duel.finished() {
+        font.draw_text(frame, 112, 50, "PRESS ANY KEY", None);
+    }
+}
+
 fn draw_battle(
     frame: &mut IndexedFrame,
     session: &Session,
@@ -1376,6 +1410,16 @@ fn main() -> Result<()> {
             runtime.handle_key(Key::Down);
         }
         runtime.handle_key(Key::Confirm);
+    }
+    // Single combat between two characters (1-based ids), e.g.
+    // `--duel 1 62` for Constantine against Lupinus.
+    if let Some(pair) = args.windows(3).find(|w| w[0] == "--duel") {
+        if let (Ok(a), Ok(b)) = (pair[1].parse::<u8>(), pair[2].parse::<u8>()) {
+            runtime.open_screen(Screen::Map);
+            if !runtime.start_duel(a, b) {
+                eprintln!("no live map for a duel");
+            }
+        }
     }
     if let Some(steps) = arg_value("--ticks") {
         for _ in 0..steps {

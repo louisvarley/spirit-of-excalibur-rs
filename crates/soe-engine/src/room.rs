@@ -44,7 +44,7 @@ pub fn compose_scene(
 }
 
 /// Blit an indexed image, skipping palette index 0 and clipping to the frame.
-fn blit_transparent(frame: &mut IndexedFrame, image: &PlanarImage, x: i32, y: i32, flip_x: bool) {
+pub(crate) fn blit_transparent(frame: &mut IndexedFrame, image: &PlanarImage, x: i32, y: i32, flip_x: bool) {
     let width = i32::from(image.width);
     for sy in 0..i32::from(image.height) {
         let dy = y + sy;

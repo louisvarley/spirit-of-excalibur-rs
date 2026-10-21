@@ -163,6 +163,12 @@ impl MapSim {
         &self.ds
     }
 
+    /// Mutable DGROUP, for results computed elsewhere (a duel's character
+    /// records).
+    pub fn ds_mut(&mut self) -> &mut [u8] {
+        &mut self.ds
+    }
+
     #[must_use]
     pub fn entities(&self) -> &[MapEntity] {
         &self.entities
