@@ -15,6 +15,7 @@ Commands run left to right:
     shot NAME         save tests/vectors/emu/NAME.png
     save NAME         save snapshot tests/vectors/emu/NAME.snap
     state             print ticks, CS:IP (runtime and Ghidra) and video mode
+    trace N [TOP]     run N ticks counting entries into exported functions
 
 Snapshots and screenshots contain the original game's memory and images, so
 they live in the git-ignored tests/vectors/emu/.
@@ -41,6 +42,37 @@ LOAD_SEG = 0x214
 
 def ghidra(seg: int, off: int) -> str:
     return f"{seg - LOAD_SEG + 0x1000:04x}:{off:04x}"
+
+
+def function_entries() -> dict[int, str]:
+    """Runtime linear address -> Ghidra name, from export/index.tsv."""
+    index = ROOT / "export" / "index.tsv"
+    out = {}
+    for line in index.read_text().splitlines()[1:]:
+        addr, name = line.split("	")[:2]
+        seg, off = (int(x, 16) for x in addr.split(":"))
+        out[((seg - 0x1000 + LOAD_SEG) << 4) + off] = f"{addr} {name}"
+    return out
+
+
+def trace(m: DosMachine, ticks: int, top: int) -> None:
+    from collections import Counter
+    from unicorn import UC_HOOK_BLOCK
+    names = function_entries()
+    hits: Counter = Counter()
+
+    def on_block(uc, addr, size, user):
+        name = names.get(addr)
+        if name:
+            hits[name] += 1
+
+    h = m.uc.hook_add(UC_HOOK_BLOCK, on_block)
+    try:
+        m.run(ticks)
+    finally:
+        m.uc.hook_del(h)
+    for name, n in hits.most_common(top):
+        print(f"{n:8d}  {name}")
 
 
 def boot(m: DosMachine) -> None:
@@ -87,6 +119,10 @@ def main(argv: list[str]) -> int:
             path = OUT / f"{args.pop(0)}.snap"
             path.write_bytes(pickle.dumps(m.snapshot()))
             print("saved", path)
+        elif cmd == "trace":
+            n = int(args.pop(0))
+            top = int(args.pop(0)) if args and args[0].isdigit() else 40
+            trace(m, n, top)
         elif cmd == "state":
             cs, ip = m.r("cs"), m.r("ip")
             print(f"ticks={m.ticks} cs:ip={cs:04x}:{ip:04x} ({ghidra(cs, ip)}) mode={m.video_mode:02x}")

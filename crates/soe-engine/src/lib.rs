@@ -48,3 +48,4 @@ pub mod battle;
 pub mod smus;
 
 pub mod window;
+pub mod travel;

@@ -77,3 +77,43 @@ real `SCENES.RES` record.
 - Whether the original map screen's palette is the room table for every screen
   or a per-object palette swap. The port uses the room palette, which best
   matches the captured frame.
+
+## Travel step (`FUN_1b06_0007`) — ported, oracle-verified
+
+Ported as `soe-engine::travel::fun_1b06_0007`. Verified against 10 915 real
+calls recorded from the original in the emulator
+(`tests/oracle/travel_vectors.py travel1:500 cont0:650 cont3:900`), including
+waypoint picks and one arrival. The wake callback branch (`DS:0676`) has not
+been exercised yet.
+
+The UI framework calls it per map widget with the widget index; the entity is
+`**(DS:969F + 4*index)`. Entity fields used:
+
+| off | field |
+|---:|---|
+| `0x0A` | id passed to the wake callback |
+| `0x0E` | moved this frame |
+| `0x10`/`0x12` | y / x (pixels, map is `0x480` x `0x3C0`) |
+| `0x1C`/`0x1E` | target y / x (`x == 0` means no target) |
+| `0x20`/`0x22` | current waypoint y / x |
+| `0x24` | carried movement budget |
+| `0x26` | speed nibble (`<< DS:4FC4` per call) |
+| `0x27` | followed entity id (looked up with `FUN_15b8_16ca(0, 0xD3, id)`) |
+| `0x28..0x2D` / `0x2E..0x33` | last six waypoint tiles (y / x) |
+| `0x34` | wake time, compared with `clock >> 8` (`DS:4FBF`, 32-bit) |
+
+DGROUP tables: neighbour weights `0682`, neighbour offsets `068A`/`069A`,
+probe->neighbour map `06AA` (low bytes of words), probe offsets `06CA`/`06EA`,
+terrain speed `2A5C` (256 bytes), speed shift `4FC4`. Terrain comes from
+`FUN_15b8_1b1b`: 16-pixel tiles of the 72-wide grid behind `[DS:8E29]`
+(`+0x44` width, `+0x38` -> -> tiles), `0xFF` outside the map.
+
+Step cost is `0x6400 / speed` straight and `0x7D00 / speed` diagonal (Ghidra
+shows both constants as string addresses). Globals `DS:9B25`, `DS:9A7C`,
+`DS:9A7E` are read before being written and so carry over between calls
+(`TravelScratch`). Callbacks installed by `FUN_2d65_2cd9` via `FUN_15b8_0004`:
+arrival `DS:0672 = 2920:026C`, wake `DS:0676 = 2920:06A3`.
+
+On the original map only the party (widget 11) had a target during these
+runs; clicking a location away from the party starts travel, clicking the
+party's own location shows an info line ("King Clariance is at York").
