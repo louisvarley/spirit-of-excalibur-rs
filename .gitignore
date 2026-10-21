@@ -1,25 +1,44 @@
-# original game or derived from it: never commit
+# Allow-list: ignore everything at the root, then re-include only our own
+# code and notes. Original game files and anything derived from them (dumps,
+# hex heads, Ghidra logs, saves, unpacked executables) must never be committed.
+/*
+!/.gitignore
+!/.cargo/
+!/CLAUDE.md
+!/README.md
+!/CONVENTIONS.md
+!/SYMBOLS.md
+!/Cargo.toml
+!/Cargo.lock
+!/rustfmt.toml
+!/crates/
+!/notes/
+!/packaging/
+!/tests/
+!/ghidra/
+!/original/
+!/game/
+
+# Inside the re-included folders, only our own files.
+/ghidra/*
+!/ghidra/scripts/
 /original/*
 !/original/README.md
 /game/*
 !/game/README.md
-/export/
-/ghidra/*.rep/
-/ghidra/*.gpr
-/ghidra/*.lock*
-/ghidra_backup_*.zip
 /tests/vectors/
+
+# Never, anywhere.
 *.EXE
+*.exe
 *.RES
 *.DVR
 *.SAV
+*.sav
 *.DAT
-/out/
+*.CFG
+*.IDF
+*.PIF
+__pycache__/
+*.pyc
 /target/
-/dist/
-/screenshots/
-/*.sav
-/*.SAV
-
-/reference/
-/packs/
