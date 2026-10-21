@@ -26,8 +26,13 @@ Updated: M1/M2/M3 foundation session.
 - Game font atlas located: `TITLE.RES#200` + EXCAL metrics; `BitmapFont`.
 - Headless `Input`, `Timer`, `Sound`, `GameFiles` (read/write/list),
   `Platform`, `ResourceManager`, `Session`.
-- Playable `soe-play`: winit window, 18.2 Hz room animation, HUD text,
-  keyboard/mouse scene navigation.
+- Playable `soe-play`: winit window, 2x view, 18.2 Hz room animation,
+  fade transitions, room/map/status/story/travel/save/pause screens,
+  keyboard/mouse navigation, quick save/load.
+- `HINT.RES` story reader (192 paragraphs) and original `INTF#621` panels.
+- Location travel list and save/load browser.
+- End-to-end engine integration test (room, animation, save, font, story,
+  travel).
 - Main loop/renderer structure documented.
 
 ## M1 remaining
@@ -52,12 +57,18 @@ Updated: M1/M2/M3 foundation session.
 
 ## M4-M7
 
-Not started: combat, trade, magic, dialogue, travel, map screens, save/load UI,
-integration, packaging, upscale/override pipeline.
+- Travel is list-based; graphical regional map/camera/current-location tracking
+  remains.
+- Events/NPCs/dialogue choices: story reader only; event tables not reversed.
+- Inventory/economy/magic/trade: read-only status; item/stat layouts not
+  reversed.
+- Combat: not started; battle tables/formulas not reversed.
+- Audio, packaging and upscale remain.
 
 ## Next
 
-1. Port the main-loop state machine and dialogue/UI panels.
-2. M2 OPL2/SMUS audio backend.
-3. Map/travel screens and save/load UI.
-4. M4 game systems.
+1. Reverse event/NPC tables and dialogue-choice actions.
+2. Reverse character/item/equipment layout and trade/spell actions.
+3. Reverse battle setup/round tables and outcomes.
+4. Port the exact `FUN_2d65_2cd9` state loop.
+5. OPL2/SMUS audio, packaging, upscale.
