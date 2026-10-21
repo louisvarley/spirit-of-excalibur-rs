@@ -27,12 +27,10 @@ def lin(seg: int, off: int) -> int:
     return ((seg - 0x1000 + LOAD_SEG) << 4) + off
 
 
-def main(argv: list[str]) -> int:
-    snap, a, b = argv[0], int(argv[1]), int(argv[2])
-    ticks = int(argv[3]) if len(argv) > 3 else 600
-    m = DosMachine()
-    m.load("EXCAL.EXE")
-    m.restore(pickle.loads((OUT / f"{snap}.snap").read_bytes()))
+def setup_duel(m: DosMachine, a: int, b: int) -> tuple[int, int, int, int]:
+    """Place B's entity next to A's on the map so they meet, and make the
+    first UI wait inside the fight check return at once (accepting the
+    challenge). Returns the two entities' (segment, offset) pairs."""
     # Put B's map entity right next to A's, as if they had just met; the
     # game's own collision scan then runs the encounter and fight checks.
     ents = {}
@@ -79,6 +77,16 @@ def main(argv: list[str]) -> int:
             m.w("sp", sp + 4)
 
     m.uc.hook_add(UC_HOOK_CODE, skip_first_modal, begin=lin(0x15B8, 0x09F7), end=lin(0x15B8, 0x09F7))
+    return sa, oa, sb, ob
+
+
+def main(argv: list[str]) -> int:
+    snap, a, b = argv[0], int(argv[1]), int(argv[2])
+    ticks = int(argv[3]) if len(argv) > 3 else 600
+    m = DosMachine()
+    m.load("EXCAL.EXE")
+    m.restore(pickle.loads((OUT / f"{snap}.snap").read_bytes()))
+    sa, oa, sb, ob = setup_duel(m, a, b)
     seen = []
 
     def scan(uc, addr, size, user):

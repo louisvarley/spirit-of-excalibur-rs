@@ -73,6 +73,33 @@ pub trait CombatWorld {
     fn location_of(&self, ds: &[u8], id: u8) -> u8;
 }
 
+/// Script handler 15 (installed in `DS:0389` at run time): run
+/// [`fun_20b5_1dff`] for the scene's current widget against the widget
+/// `FUN_15b8_16ca(0x200, 0, actor[+0x2E])` finds. A widget targeting itself
+/// is run without a target (the original would alias the two; not seen).
+pub fn script_hook(
+    scene: &mut crate::script::ScriptScene,
+    op: u16,
+    ds: &mut [u8],
+    stale_bp10: u16,
+    world: &mut impl CombatWorld,
+) -> (u8, Vec<CombatEvent>) {
+    let cur = scene.current as usize;
+    let tid = ww(&scene.widgets[cur], 0x2e);
+    let target = scene.find(0x200, 0, tid).filter(|&t| t != cur);
+    match target {
+        Some(t) if t < cur => {
+            let (lo, hi) = scene.widgets.split_at_mut(cur);
+            fun_20b5_1dff(ds, &mut hi[0], Some(&mut lo[t]), op, stale_bp10, world)
+        }
+        Some(t) => {
+            let (lo, hi) = scene.widgets.split_at_mut(t);
+            fun_20b5_1dff(ds, &mut lo[cur], Some(&mut hi[0]), op, stale_bp10, world)
+        }
+        None => fun_20b5_1dff(ds, &mut scene.widgets[cur], None, op, stale_bp10, world),
+    }
+}
+
 fn rec(id: u8) -> usize {
     CHAR_NAME + usize::from(id) * CHAR_SIZE
 }

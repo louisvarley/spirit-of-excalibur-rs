@@ -876,6 +876,72 @@ impl ScriptScene {
         }
         drawn
     }
+
+    /// The character half of `FUN_2d65_13e2` (2d65:1767-1b5e): spawn every
+    /// character present as a script widget, foes (battle list
+    /// `DS:9DC3 + 0x14`) first, then the party (`DS:9DC3`). `ds` is DGROUP;
+    /// `room_base` is what the room builder `FUN_2b79_0003` returned (AL)
+    /// and `mode` the scene bits `DS:9DAB & 0xC0` taken on entry (0x80 swaps
+    /// the sides' placement, 0x40 moves the party right).
+    pub fn fun_2d65_13e2_characters(&mut self, ds: &[u8], room_base: u8, mode: u8, host: &mut dyn ScriptHost) {
+        let b = |at: usize| ds[at];
+        let wd = |at: usize| u16::from_le_bytes([ds[at], ds[at + 1]]);
+        let base = room_base.wrapping_add(b(0x79f7 + usize::from(b(0x9dab))));
+        let rec = |c: u8| 0x2c5e + usize::from(c) * 0x38;
+        let campaign = b(0x5e37) != 0;
+        let mut foes = 0u16;
+        for side in [0x14usize, 0] {
+            let mut i = side;
+            loop {
+                let c = b(0x9dc3 + i);
+                if c == 0 {
+                    break;
+                }
+                let r = rec(c);
+                if wd(r + 0x16) & 0x8000 == 0 {
+                    let slot = if side == 0 { i } else { usize::from(foes) };
+                    let kind = usize::from(b(r + 0x26));
+                    let y = u16::from(base)
+                        .wrapping_add(u16::from(b(0x7a2e + slot)))
+                        .wrapping_add(wd(0x7a66 + kind * 2));
+                    let random_x = |host: &mut dyn ScriptHost| {
+                        host.random(foes.wrapping_mul(10)).wrapping_add(wd(0x7a38 + kind * 2))
+                    };
+                    let x = match (side, mode) {
+                        (0x14, 0x80) => wd(0x7a1a + slot * 2),
+                        (0x14, _) => random_x(host),
+                        (_, 0x80) => random_x(host),
+                        (_, 0x40) => wd(0x7a1a + slot * 2).wrapping_add(0x96),
+                        _ => wd(0x7a1a + slot * 2),
+                    };
+                    let mirrored = (side == 0x14) != (mode == 0x80);
+                    let args = SpawnArgs {
+                        flags: u16::from(mirrored) | 0x240,
+                        res: wd(r + 0x22),
+                        callback: (9, 0x2a6e),
+                        id: u16::from(c),
+                        variant: u16::from(b(r + 0x27)),
+                        script: kind as u8,
+                        depth: (y as u8).wrapping_add(0xfd),
+                        x,
+                        y,
+                        ..SpawnArgs::default()
+                    };
+                    let at = self.fun_15b8_0461(&args, host);
+                    let first = if side == 0 { i == 0 } else { foes == 0 };
+                    let lead = if campaign { c == b(0x9c4e) || c == b(0x9c4f) } else { first };
+                    let nw = &mut self.widgets[at];
+                    nw[0x27] = if lead { 3 } else { 4 };
+                    set_w(nw, 0x34, i as u16);
+                    set_timer(nw, 0);
+                    if side == 0x14 {
+                        foes += 1;
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
 }
 
 struct HostWorld<'a>(&'a mut dyn ScriptHost);
@@ -967,6 +1033,26 @@ mod tests {
         programs: std::collections::HashMap<u8, Vec<u16>>,
         sheets: std::collections::HashMap<u32, Vec<u8>>,
         sounds: Vec<(String, u16)>,
+        combat: Vec<serde_json::Value>,
+        combat_calls: usize,
+    }
+
+    struct CombatReplay<'a> {
+        rng: &'a mut Vec<u16>,
+        rout: Vec<bool>,
+    }
+
+    impl crate::combat::CombatWorld for CombatReplay<'_> {
+        fn random(&mut self, _n: u16) -> u16 {
+            assert!(!self.rng.is_empty(), "combat drew a random number the original did not");
+            self.rng.remove(0)
+        }
+        fn rout_check(&mut self) -> bool {
+            self.rout.remove(0)
+        }
+        fn location_of(&self, ds: &[u8], id: u8) -> u8 {
+            crate::fight::fun_2d65_0a2a(ds, &[], id)
+        }
     }
 
     impl ScriptWorld for Replay {
@@ -1006,8 +1092,46 @@ mod tests {
                 ScriptEvent::Stamp { .. } => {}
             }
         }
-        fn hook(&mut self, _handler: u16, _arg: u16, _scene: &mut ScriptScene) -> u8 {
-            unreachable!("calls that reach the talk/combat hooks are skipped")
+        fn hook(&mut self, handler: u16, arg: u16, scene: &mut ScriptScene) -> u8 {
+            assert_eq!(handler, 15, "steps that reach the talk hook are skipped");
+            let rec = self.combat.remove(0);
+            let mut ds = hex(rec["ds"].as_str().unwrap());
+            let before = ds.clone();
+            let mut world = CombatReplay {
+                rng: &mut self.rng,
+                rout: rec["rout"].as_array().unwrap().iter().map(|r| r.as_u64().unwrap() != 0).collect(),
+            };
+            let stale = rec["stale"].as_u64().unwrap() as u16;
+            let (ret, events) = crate::combat::script_hook(scene, arg, &mut ds, stale, &mut world);
+            for e in events {
+                if let crate::combat::CombatEvent::Sound(n) = e {
+                    self.sounds.push(("sound".into(), n));
+                }
+            }
+            // Compare only the state the combat step owns (the regions
+            // battle_vectors.py records): routines it delegates as events
+            // (messages, unit removal, UI) write elsewhere.
+            let owned = |i: usize| {
+                (0x2c5e..0x2c5e + 0x5e * 0x38).contains(&i)
+                    || [(0x01f2, 1), (0x032d, 1), (0x5e37, 1), (0x5e41, 4), (0x7d3e, 4), (0x9a6c, 2),
+                        (0x9c4e, 0x0a), (0x9c56, 2), (0x9c82, 0x28), (0x9dac, 2), (0x9dae, 3), (0x9dc3, 0x32)]
+                        .iter()
+                        .any(|&(a, n)| (a..a + n).contains(&i))
+            };
+            let changes: Vec<(u64, u64)> = (0..ds.len())
+                .filter(|&i| ds[i] != before[i] && owned(i))
+                .map(|i| (i as u64, u64::from(ds[i])))
+                .collect();
+            let want: Vec<(u64, u64)> = rec["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| (c[0].as_u64().unwrap(), c[1].as_u64().unwrap()))
+                .filter(|(i, _)| owned(*i as usize))
+                .collect();
+            assert_eq!(changes, want, "DGROUP changes of combat call {}", self.combat_calls);
+            self.combat_calls += 1;
+            ret
         }
     }
 
@@ -1031,7 +1155,7 @@ mod tests {
             return;
         };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let (mut done, mut hooked) = (0, 0);
+        let (mut done, mut hooked, mut combat) = (0, 0, 0);
         for run in v["runs"].as_array().unwrap() {
             let programs: std::collections::HashMap<u8, Vec<u16>> = run["programs"]
                 .as_object()
@@ -1079,6 +1203,8 @@ mod tests {
                     programs: programs.clone(),
                     sheets: sheets.clone(),
                     sounds: Vec::new(),
+                    combat: call["combat"].as_array().cloned().unwrap_or_default(),
+                    combat_calls: 0,
                 };
                 if frames {
                     scene.fun_18cb_0002(&mut host);
@@ -1104,10 +1230,72 @@ mod tests {
                     .collect();
                 assert_eq!(host.sounds, sounds, "{ctx}: sounds");
                 assert!(host.clocks.is_empty() && host.rng.is_empty(), "{ctx}: unused clock/rng");
+                assert!(host.combat.is_empty(), "{ctx}: combat calls not made");
+                combat += host.combat_calls;
                 done += 1;
             }
         }
-        eprintln!("{file}: matched {done}; skipped (talk/combat hooks): {hooked}");
+        eprintln!("{file}: matched {done} (with {combat} combat calls); skipped (talk hook): {hooked}");
         assert!(done > 0);
+    }
+
+    /// Replays the character spawns of `FUN_2d65_13e2` recorded as the
+    /// duel starts (`tests/oracle/duel_spawn_vectors.py`).
+    #[test]
+    fn matches_original_duel_spawns() {
+        let Ok(text) = std::fs::read_to_string("../../tests/vectors/duel_spawn.json") else {
+            eprintln!("SKIP: tests/vectors/duel_spawn.json absent");
+            return;
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut done = 0;
+        for run in v["runs"].as_array().unwrap() {
+            let ds = hex(run["ds"].as_str().unwrap());
+            // The callback segment (+0x08) was recorded at run time; the
+            // port keeps Ghidra's (load segment 0x214 vs 0x1000).
+            let spawned: Vec<Widget> = run["spawned"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| {
+                    let mut wd: Widget = hex(w.as_str().unwrap()).try_into().unwrap();
+                    let seg = u16::from_le_bytes([wd[8], wd[9]]);
+                    if seg != 0 {
+                        wd[8..10].copy_from_slice(&(seg - 0x214 + 0x1000).to_le_bytes());
+                    }
+                    wd
+                })
+                .collect();
+            let mut host = Replay {
+                clocks: Vec::new(),
+                rng: run["rng"].as_array().unwrap().iter().map(|r| r.as_u64().unwrap() as u16).collect(),
+                loads: spawned.iter().map(image).collect(),
+                programs: std::collections::HashMap::new(),
+                sheets: run["sheets"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(k, s)| (k.parse().unwrap(), hex(s.as_str().unwrap())))
+                    .collect(),
+                sounds: Vec::new(),
+                combat: Vec::new(),
+                combat_calls: 0,
+            };
+            let mut scene = ScriptScene::default();
+            scene.fun_2d65_13e2_characters(
+                &ds,
+                run["al"].as_u64().unwrap() as u8,
+                run["mode"].as_u64().unwrap() as u8,
+                &mut host,
+            );
+            assert_eq!(scene.widgets.len(), spawned.len(), "spawn count");
+            for want in &spawned {
+                let got = scene.widgets.iter().find(|w| w[0x0a..0x0c] == want[0x0a..0x0c]).expect("widget");
+                assert_eq!(got.as_slice(), want.as_slice(), "widget {:#x}", w(want, 0x0a));
+            }
+            assert!(host.rng.is_empty(), "unused random numbers");
+            done += spawned.len();
+        }
+        eprintln!("duel spawns matched: {done}");
     }
 }

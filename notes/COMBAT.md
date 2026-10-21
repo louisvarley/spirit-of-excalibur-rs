@@ -224,3 +224,26 @@ So, to run the duel on the real engine, the port needs `FUN_2d65_13e2` (field
 scene set-up), `FUN_18cb_0002` (scene loop) and a combat `ScriptHost::hook`
 calling `combat::fun_20b5_1dff`. The interpreter itself is already ported
 (`script::ScriptScene`).
+
+## Duel on the real engine (ported 2026-10-21)
+
+- `FUN_18cb_0002` (scene frame), `FUN_18cb_05b0` (followers),
+  `FUN_15b8_0834` (removal) and `FUN_15b8_0461` (widget creation, all three
+  paths) live in `script::ScriptScene`. The frame returns the dirty rects
+  the original redraws; the drawing itself is for the presenter.
+  Verified: 4,498 frames (`scene_vectors.py --frames`).
+- The character half of `FUN_2d65_13e2` is
+  `ScriptScene::fun_2d65_13e2_characters`. Foes (`DS:9DC3+0x14`) spawn
+  first, then the party. y = room base + `DS:7A2E[slot]` + `DS:7A66[kind]`;
+  x comes from `DS:7A1A[slot]`, or from `rand(foes*10) + DS:7A38[kind]`
+  depending on the mode bits (`9DAB & 0xC0`). pc is 3 for the side's lead
+  and 4 for the rest; `+34` is the list slot. Verified on the two duel
+  fighters (`tests/oracle/duel_spawn_vectors.py`; mode 0 only). The room
+  builder `FUN_2b79_0003`, banners and music are not ported here.
+- Handler 15 is `combat::script_hook`. The target is
+  `ScriptScene::find(0x200, 0, actor+2E)`. Verified: all 65 duel steps,
+  including 57 combat calls. The check covers the widgets, the sounds and the
+  DGROUP regions the combat step owns. `DS:01FC` is the random seed, and
+  `FUN_15b8_17e0` advances it.
+- Note for recorders: the stack segment lies inside DGROUP's 64 KB
+  (SS:SP = DS:9E90+SP in the duel), so DGROUP diffs must skip the stack.

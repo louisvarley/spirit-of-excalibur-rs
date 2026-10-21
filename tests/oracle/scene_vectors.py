@@ -4,7 +4,8 @@
 For every call while the original plays from a snapshot, records the whole
 widget list (DS:969D/969F) and the scene globals before and after, the clock
 at each loop check, the random numbers drawn, the sounds started, the images
-loaded, and whether the talk/combat hooks ran. Scripts (DS:1E2A) and sprite
+loaded, whether the talk hook ran, and for each combat-hook call DGROUP
+before it, the stale stack word, the rout answers and DGROUP's changes. Scripts (DS:1E2A) and sprite
 sheet headers are stored once per snapshot.
 Writes tests/vectors/scene_steps.json. With --frames, records whole scene
 frames (FUN_18cb_0002) instead, with the clock captured at every read the
@@ -80,7 +81,7 @@ def record(snap: str, ticks: int, frames: bool = False) -> dict:
         nonlocal cur
         snapshot_programs()
         cur = {"before": widgets(), "globals": globals_(), "clocks": [], "rng": [],
-               "sounds": [], "loads": [], "hooked": False, "clock0": clock()}
+               "sounds": [], "loads": [], "hooked": False, "combat": [], "clock0": clock()}
 
     def loop_check(uc, addr, size, user):
         if cur is not None:
@@ -103,6 +104,32 @@ def record(snap: str, ticks: int, frames: bool = False) -> dict:
     def hooked(uc, addr, size, user):
         if cur is not None:
             cur["hooked"] = True
+
+    def combat_in(uc, addr, size, user):
+        if cur is None:
+            return
+        ss, sp = m.r("ss"), m.r("sp")
+        # [BP-0x10] as opcode 6 will read it (BP = SP-2 after PUSH BP).
+        cur["combat"].append({"ds": m.read(DS, 0, 0x10000), "stale": m.u16(ss, (sp - 0x12) & 0xFFFF),
+                              "rout": [], "sp": ((ss - DS) << 4) + sp})
+
+    def combat_rout(uc, addr, size, user):
+        if cur is not None and cur["combat"]:
+            cur["combat"][-1]["rout"].append(m.r("ax") & 0xFF)
+
+    def combat_out(uc, addr, size, user):
+        if cur is None or not cur["combat"]:
+            return
+        c = cur["combat"][-1]
+        before, after = c.pop("ds"), m.read(DS, 0, 0x10000)
+        c["ds"] = before.hex()
+        # Store only what changed (offset, new byte), skipping the clock
+        # and the stack below SP (the stack segment lies inside DGROUP's
+        # 64K; "sp" is SS:SP as a DS offset).
+        sp = c.pop("sp")
+        free = range(sp - 0x1000, sp + 4)
+        c["changes"] = [[i, after[i]] for i in range(0x10000)
+                        if before[i] != after[i] and not 0x7E3E <= i < 0x7E42 and i not in free]
 
     def leave(uc, addr, size, user):
         nonlocal cur
@@ -128,7 +155,9 @@ def record(snap: str, ticks: int, frames: bool = False) -> dict:
     hook(sound("cue"), 0x1316, 0x1828)
     hook(loaded, 0x18CB, 0x1418)
     hook(hooked, 0x26C5, 0x071A)
-    hook(hooked, 0x20B5, 0x1DFF)
+    hook(combat_in, 0x20B5, 0x1DFF)
+    hook(combat_rout, 0x20B5, 0x2139)
+    hook(combat_out, 0x20B5, 0x2A2F)
     hook(leave, 0x18CB, 0x05AF if frames else 0x08FE)
     m.run(ticks)
     print(f"{snap}: {len(calls)} steps, {len(programs)} scripts, {len(sheets)} sheets", flush=True)
