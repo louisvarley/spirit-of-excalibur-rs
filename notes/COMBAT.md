@@ -197,3 +197,30 @@ are not covered yet. Note for recorders: same-segment calls here are
 `battle.rs` still runs its own round model; switching it to drive these
 steps needs the per-unit script interpreter around them (the `20b5`
 scene functions), which is the next piece.
+
+## Where the duel is animated (traced 2026-10-21)
+
+The duel's fight is animated by the field scene. The battle screen only shows
+the menus. Logging `FUN_15b8_0461` calls while `duel_watch.py map 1 62` runs
+shows the animated widgets (flag 0x200) being created by:
+
+- `2b79:036c`: scenery (flags 0xC240, script 23 (0x17), depth 4).
+- `2d65:18a8` inside `FUN_2d65_13e2`: Lupinus, id 0x3E, `+0C` 0x19, flags
+  0x241 (mirrored), script 0, depth 184 (0xB8), entering from x 250.
+- `2d65:1ae7` inside `FUN_2d65_13e2`: Constantine, id 1, `+0C` 1, flags 0x240,
+  script 0, depth 184 (0xB8), entering from x -30.
+
+Each fighter's `+2E` names the other. Script 0 (`DS:070C`, static EXE data,
+like scripts 0-23 at `DS:1E2A`) walks them together and calls handler 15 =
+`FUN_20b5_1dff` for each exchange. `FUN_18cb_0002` is the scene loop: it
+runs `FUN_18cb_066a` for every 0x240 widget whose timer is due, then
+composites the redraw rects.
+
+`FUN_2449_0aed` is different: it builds the army-battle tokens. Its flags are
+0x248 or 0x249, its scripts 0x0D-0x10 (+4 for foes), its images resources
+0x2EE-0x2F1, and its slots come from the table at `DS:64B8`.
+
+So, to run the duel on the real engine, the port needs `FUN_2d65_13e2` (field
+scene set-up), `FUN_18cb_0002` (scene loop) and a combat `ScriptHost::hook`
+calling `combat::fun_20b5_1dff`. The interpreter itself is already ported
+(`script::ScriptScene`).
