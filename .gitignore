@@ -16,6 +16,7 @@
 *.DAT
 /out/
 /target/
+/dist/
 /screenshots/
 /*.sav
 /*.SAV
