@@ -168,3 +168,32 @@ Meeting rules worth knowing when setting up tests: encounters are ignored
 before clock `0xA00`; two characters with no `0x700` flags only meet when
 one is kind 4; the collision radius is `DS:067E[max(class)]` = 1, 8, 16, 32
 for movement class `+0x26 >> 4 & 3`.
+
+## `FUN_20b5_1dff` ported (`soe-engine::combat`)
+
+Opcode = high byte (CS:1EC6 table): 0 order wait, 1 random check, 2 random
+timer, 3 fixed timer + attitude, 4 morale, 5 flee/withdraw, 6 attack,
+7 battle start (scene set-up, returned as an event), 8 magic (absorption).
+
+Attack (op 6): chance = (operand & 0x7F) - target `+0x2E`, plus
+attack - target `+0x2D` for weapon attacks (attack = max(`+0x2D`,
+(`+0x2A` - 10) >> 1)); `rand(100)` below chance hits, below chance/4 hits
+for 2; a miss within twice the chance is a parry (state 8). HP is
+`name+0x2C`. In a contest (mode bit 4) the first wound concedes; otherwise
+HP reaching 0 kills (flag 8 cleared, "%S is dead."). Wound messages come
+from the far-pointer table `DS:5DCA` (`rand(4) + 4*damage`, magic
+`damage + 12`).
+
+Original bugs reproduced: op 6 reads the uninitialised `[BP-0x10]` in the
+contest path; op 5 calls `FUN_26c5_041b` with two arguments, so its delta
+is the previous call's leftover (-2 or 0).
+
+Verified on 464 recorded calls (`tests/oracle/battle_vectors.py duel2 2000
+8`): opcodes 0-4 and 6, including a kill. The eight runs replay the same
+duel (the delays did not change the random draws), and opcodes 5 and 8
+are not covered yet. Note for recorders: same-segment calls here are
+`PUSH CS; CALL near`, so arguments start at SP+4.
+
+`battle.rs` still runs its own round model; switching it to drive these
+steps needs the per-unit script interpreter around them (the `20b5`
+scene functions), which is the next piece.

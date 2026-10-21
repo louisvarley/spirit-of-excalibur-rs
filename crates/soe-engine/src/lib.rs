@@ -54,3 +54,4 @@ pub mod mapsim;
 pub mod names;
 pub mod arrival;
 pub mod fight;
+pub mod combat;
