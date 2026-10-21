@@ -1553,6 +1553,7 @@ dependencies = [
  "anyhow",
  "cpal",
  "oplon",
+ "png",
  "soe-assets",
  "soe-engine",
  "soe-res",

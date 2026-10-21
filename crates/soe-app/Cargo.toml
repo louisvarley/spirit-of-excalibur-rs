@@ -20,6 +20,7 @@ winit = "0.30"
 softbuffer = "0.4"
 cpal = "0.18"
 oplon = "1.0"
+png = "0.17"
 
 [lints]
 workspace = true

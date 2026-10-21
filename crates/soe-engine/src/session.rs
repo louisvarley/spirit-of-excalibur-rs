@@ -12,6 +12,7 @@ use soe_video::{IndexedFrame, decode_planar};
 use crate::ani::FrameBank;
 use crate::font::BitmapFont;
 use crate::palette::PaletteSet;
+use crate::window::WindowStyle;
 use crate::resources::{ResourceError, ResourceManager};
 use crate::room::compose_scene;
 use crate::save::GameState;
@@ -70,6 +71,7 @@ pub struct Session {
     pub scene: Scene,
     pub frame: IndexedFrame,
     font: Option<BitmapFont>,
+    window_style: Option<WindowStyle>,
     static_images: std::collections::HashMap<u16, soe_video::PlanarImage>,
     animations: std::collections::HashMap<u16, Vec<soe_video::PlanarImage>>,
     animation_frame: usize,
@@ -96,6 +98,7 @@ impl Session {
             },
             frame: IndexedFrame::black(),
             font: None,
+            window_style: None,
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
@@ -135,6 +138,9 @@ impl Session {
 
         let palettes = PaletteSet::load(&exe).unwrap_or_else(|_| PaletteSet::black());
         let font = load_font(&mut resources, exe.as_ref());
+        let window_style = std::fs::read(exe.as_ref())
+            .ok()
+            .and_then(|bytes| WindowStyle::from_exe(&bytes));
 
         let mut session = Self {
             game_dir,
@@ -150,6 +156,7 @@ impl Session {
             },
             frame: IndexedFrame::black(),
             font,
+            window_style,
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
@@ -248,6 +255,12 @@ impl Session {
         let mut files = crate::files::CaseInsensitiveDir::new(dir.as_ref());
         files.write(name, &self.state.to_bytes())?;
         Ok(())
+    }
+
+    /// Dialog window tables (`DS:5D62`, `DS:1F4D`), when the EXE was readable.
+    #[must_use]
+    pub fn window_style(&self) -> Option<&WindowStyle> {
+        self.window_style.as_ref()
     }
 
     #[must_use]

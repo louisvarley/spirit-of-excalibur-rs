@@ -21,6 +21,7 @@ use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
 use soe_engine::story::HintBook;
+use soe_engine::window::{self as window, WindowOp};
 use soe_engine::worldmap::WorldMap;
 use soe_video::{IndexedFrame, decode_planar};
 use winit::application::ApplicationHandler;
@@ -101,16 +102,9 @@ impl App {
         }
     }
 
-    fn redraw(&mut self) {
-        let Some(window) = &self.window else {
-            return;
-        };
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-        self.resize(size.width, size.height);
-        let fade = self.runtime.fade();
+    /// Build the logical frame for the current screen and the palette to
+    /// present it with.
+    fn compose_frame(&self) -> (IndexedFrame, Vec<[u8; 3]>) {
         let screen = self.runtime.screen();
 
         let mut display = if matches!(screen, Screen::Map | Screen::Travel) {
@@ -148,10 +142,10 @@ impl App {
                     .unwrap_or_else(|| self.runtime.session().frame.clone());
                 if let Some(font) = self.runtime.session().font() {
                     if let Some(panel) = self.runtime.panel() {
-                        draw_panel(&mut copy, panel, 0, 72, 320, 56);
+                        draw_panel(&mut copy, self.runtime.session(), panel, 0, 72, 320, 56);
                     }
-                    font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", Some(0));
-                    font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", Some(0));
+                    font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", None);
+                    font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", None);
                 }
                 display = Some(copy);
             }
@@ -326,6 +320,29 @@ impl App {
             Screen::Room | Screen::Quit => {}
         }
 
+        let session = self.runtime.session();
+        let frame = display.unwrap_or_else(|| session.frame.clone());
+        let palette = if matches!(screen, Screen::Map | Screen::Travel) {
+            session.palettes().room.colors.clone()
+        } else {
+            session.scene_palette().colors.clone()
+        };
+        (frame, palette)
+    }
+
+    fn redraw(&mut self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        self.resize(size.width, size.height);
+        let fade = self.runtime.fade();
+        let (frame, palette) = self.compose_frame();
+        let src = &frame;
+
         let Some(surface) = &mut self.surface else {
             return;
         };
@@ -334,13 +351,6 @@ impl App {
         };
         let out_w = size.width as usize;
         let out_h = size.height as usize;
-        let src = display.as_ref().unwrap_or(&self.runtime.session().frame);
-        let session = self.runtime.session();
-        let palette = if matches!(screen, Screen::Map | Screen::Travel) {
-            &session.palettes().room.colors
-        } else {
-            &session.scene_palette().colors
-        };
         let sw = usize::from(src.width);
         let sh = usize::from(src.height);
         for y in 0..out_h {
@@ -513,6 +523,23 @@ fn wrap_text(font: &soe_engine::font::BitmapFont, text: &str, max_width: u32) ->
     lines
 }
 
+/// Full-width stone window for list/text screens, or black without the
+/// sheet; returns the x where text starts.
+fn panel_or_fill(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    height: i32,
+) -> i32 {
+    match panel {
+        Some(panel) => draw_panel(frame, session, panel, 0, 0, 320, height).0,
+        None => {
+            fill_rect(frame, 0, 0, 320, height as u16, 0);
+            10
+        }
+    }
+}
+
 fn draw_story(
     frame: &mut IndexedFrame,
     session: &Session,
@@ -520,38 +547,38 @@ fn draw_story(
     panel: Option<&soe_video::PlanarImage>,
     page: usize,
 ) {
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 96);
-    } else {
-        fill_rect(frame, 0, 0, 320, 96, 0);
-    }
+    let ox = panel_or_fill(frame, session, panel, 96);
     let Some(font) = session.font() else {
         return;
     };
-    let color = if panel.is_some() { 0 } else { 7 };
-    font.draw_text(frame, 12, 8, "CHRONICLE  H CLOSE  ARROWS PAGE", Some(color));
+    // The original blits glyphs in their atlas colours (`14b0:0af9`, flags
+    // 0x46, no remap); a solid colour is only used on the black fallback.
+    let color = if panel.is_some() { None } else { Some(7) };
+    font.draw_text(frame, ox + 2, 8, "CHRONICLE  H CLOSE  ARROWS PAGE", color);
     let Some(story) = story else {
-        font.draw_text(frame, 12, 24, "NO HINT DATA", Some(color));
+        font.draw_text(frame, ox + 2, 24, "NO HINT DATA", color);
         return;
     };
     if story.is_empty() {
-        font.draw_text(frame, 12, 24, "NO HINT DATA", Some(color));
+        font.draw_text(frame, ox + 2, 24, "NO HINT DATA", color);
         return;
     }
     let index = page % story.paragraphs.len();
-    let lines = wrap_text(font, &story.paragraphs[index], 292);
+    let lines = wrap_text(font, &story.paragraphs[index].replace('\n', " "), 250);
     for (line, text) in lines.iter().take(7).enumerate() {
-        font.draw_text(frame, 12, 22 + line as i32 * 10, text, Some(color));
+        font.draw_text(frame, ox + 2, 22 + line as i32 * 10, text, color);
     }
     font.draw_text(
         frame,
-        270,
-        83,
+        240,
+        8,
         &format!("{}/{}", index + 1, story.paragraphs.len()),
-        Some(color),
+        color,
     );
 }
 
+/// Room action menu (`FUN_1ba8_4604`): a 250-wide window at (10, 5) with
+/// four columns of buttons drawn by `FUN_15b8_0461`/`FUN_1772_01ec`.
 fn draw_actions(
     frame: &mut IndexedFrame,
     session: &Session,
@@ -563,42 +590,34 @@ fn draw_actions(
         "Pickup", "Drop", "Talk", "Use", "Search", "Trade", "Request", "Magic", "Seize", "Give",
         "Bribe", "Attack",
     ];
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 96);
-    } else {
-        fill_rect(frame, 0, 0, 320, 96, 0);
-    }
+    const COLUMNS: [i32; 4] = [3, 0x3a, 0x71, 0xa8];
     let Some(font) = session.font() else {
         return;
     };
-    let name = actor.to_ascii_uppercase();
-    font.draw_text(
-        frame,
-        10,
-        6,
-        &format!("SELECT AN ACTION FOR {name}:"),
-        Some(0),
-    );
+    let line = i32::from(font.height);
+    let rows = [line + 6, 2 * line + 14, 3 * line + 22];
+    let height = rows[2] + line + 0xd;
+    let (ox, oy) = match panel {
+        Some(panel) => draw_panel(frame, session, panel, 8, 5, 0xfa + 0x20, height),
+        None => {
+            fill_rect(frame, 0, 0, 320, height as u16 + 5, 0);
+            (8 + 0x1f, 10)
+        }
+    };
+    font.draw_text(frame, ox, oy, &format!("Select an action for {actor}:"), None);
+    let label_width = ACTIONS
+        .iter()
+        .map(|label| font.text_width(label))
+        .max()
+        .unwrap_or(0) as u16;
     for (index, action) in ACTIONS.iter().enumerate() {
-        let column = (index % 4) as i32;
-        let row = (index / 4) as i32;
-        let x = 12 + column * 76;
-        let y = 26 + row * 20;
-        fill_rect(
-            frame,
-            x as u16,
-            y as u16,
-            70,
-            15,
-            if index == selected { 0 } else { 7 },
-        );
-        font.draw_text(
-            frame,
-            x + 4,
-            y + 3,
-            action,
-            Some(if index == selected { 8 } else { 0 }),
-        );
+        let x = ox + COLUMNS[index % 4];
+        let y = oy + rows[index / 4];
+        font.draw_text(frame, x, y, action, None);
+        if let (Some(style), Some(sheet)) = (session.window_style(), panel) {
+            let ops = style.button(x as i16, y as i16, label_width, index == selected);
+            draw_window_ops(frame, sheet, 0, 0, &ops);
+        }
     }
 }
 
@@ -609,17 +628,13 @@ fn draw_targets(
     selected: usize,
     targets: &[String],
 ) {
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 96);
-    } else {
-        fill_rect(frame, 0, 0, 320, 96, 0);
-    }
+    let ox = panel_or_fill(frame, session, panel, 96);
     let Some(font) = session.font() else {
         return;
     };
-    font.draw_text(frame, 10, 6, "PLEASE SELECT:", Some(0));
+    font.draw_text(frame, ox, 6, "PLEASE SELECT:", None);
     if targets.is_empty() {
-        font.draw_text(frame, 12, 26, "NO TARGETS", Some(0));
+        font.draw_text(frame, ox + 2, 26, "NO TARGETS", None);
         return;
     }
     let selected = selected.min(targets.len() - 1);
@@ -632,10 +647,10 @@ fn draw_targets(
         let marker = if index == selected { "*" } else { " " };
         font.draw_text(
             frame,
-            12,
+            ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", target.to_ascii_uppercase()),
-            Some(0),
+            None,
         );
     }
 }
@@ -650,11 +665,7 @@ fn draw_items(
     actor: &str,
     notice: &str,
 ) {
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 96);
-    } else {
-        fill_rect(frame, 0, 0, 320, 96, 0);
-    }
+    let ox = panel_or_fill(frame, session, panel, 96);
     let Some(font) = session.font() else {
         return;
     };
@@ -666,11 +677,11 @@ fn draw_items(
         9 => "GIVE",
         _ => "SELECT",
     };
-    font.draw_text(frame, 10, 6, &format!("WHAT SHALL {name} {verb}?"), Some(0));
+    font.draw_text(frame, ox, 6, &format!("WHAT SHALL {name} {verb}?"), None);
     if items.is_empty() {
-        font.draw_text(frame, 12, 26, "NOTHING", Some(0));
+        font.draw_text(frame, ox + 2, 26, "NOTHING", None);
         if !notice.is_empty() {
-            font.draw_text(frame, 12, 82, &truncate(notice, 44), Some(0));
+            font.draw_text(frame, ox + 2, 82, &truncate(notice, 44), None);
         }
         return;
     }
@@ -683,14 +694,14 @@ fn draw_items(
         let marker = if index == selected { "*" } else { " " };
         font.draw_text(
             frame,
-            12,
+            ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", item.to_ascii_uppercase()),
-            Some(0),
+            None,
         );
     }
     if !notice.is_empty() {
-        font.draw_text(frame, 12, 86, &truncate(notice, 44), Some(0));
+        font.draw_text(frame, ox + 2, 86, &truncate(notice, 44), None);
     }
 }
 
@@ -702,17 +713,13 @@ fn draw_name_list(
     names: &[String],
     selected: usize,
 ) {
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 96);
-    } else {
-        fill_rect(frame, 0, 0, 320, 96, 0);
-    }
+    let ox = panel_or_fill(frame, session, panel, 96);
     let Some(font) = session.font() else {
         return;
     };
-    font.draw_text(frame, 10, 6, title, Some(0));
+    font.draw_text(frame, ox, 6, title, None);
     if names.is_empty() {
-        font.draw_text(frame, 12, 26, "NOTHING", Some(0));
+        font.draw_text(frame, ox + 2, 26, "NOTHING", None);
         return;
     }
     let page = selected.min(names.len() - 1) / 8;
@@ -724,10 +731,10 @@ fn draw_name_list(
         let marker = if index == selected { "*" } else { " " };
         font.draw_text(
             frame,
-            12,
+            ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", name.to_ascii_uppercase()),
-            Some(0),
+            None,
         );
     }
 }
@@ -750,20 +757,16 @@ fn draw_dialogue(
     actor: &str,
     dialogue: &soe_engine::interaction::Dialogue,
 ) {
-    if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 0, 320, 112);
-    } else {
-        fill_rect(frame, 0, 0, 320, 112, 0);
-    }
+    let ox = panel_or_fill(frame, session, panel, 112);
     let Some(font) = session.font() else {
         return;
     };
     let speaker = soe_engine::interaction::character_name(&session.state, dialogue.speaker);
     let header = format!("{speaker} speaks to {actor}.").to_ascii_uppercase();
-    font.draw_text(frame, 12, 8, &header, Some(0));
-    let lines = wrap_text(font, &dialogue.text, 292);
+    font.draw_text(frame, ox + 2, 8, &header, None);
+    let lines = wrap_text(font, &dialogue.text, 250);
     for (line, text) in lines.iter().take(7).enumerate() {
-        font.draw_text(frame, 12, 22 + line as i32 * 10, text, Some(0));
+        font.draw_text(frame, ox + 2, 22 + line as i32 * 10, text, None);
     }
     if dialogue.has_choices() {
         let y = 94;
@@ -771,10 +774,10 @@ fn draw_dialogue(
             let marker = if index == dialogue.selected { "*" } else { " " };
             font.draw_text(
                 frame,
-                14 + index as i32 * 150,
+                ox + 4 + index as i32 * 120,
                 y,
                 &format!("{marker}{}", choice.label.to_ascii_uppercase()),
-                Some(0),
+                None,
             );
         }
     }
@@ -828,7 +831,7 @@ fn draw_world_map(
     let selected = selected
         .filter(|name| !name.is_empty())
         .map_or_else(|| "NO LOCATIONS".to_string(), str::to_ascii_uppercase);
-    font.draw_text(frame, 20, 18, "ENTER TRAVEL   T CLOSE   ARROWS", Some(0));
+    font.draw_text(frame, 20, 18, "ENTER TRAVEL   T CLOSE   ARROWS", None);
     let banner = match current.filter(|name| !name.is_empty()) {
         Some(current) => format!("{}   AT {}", selected, current.to_ascii_uppercase()),
         None => selected,
@@ -838,161 +841,101 @@ fn draw_world_map(
     font.draw_text(frame, x.clamp(18, 250), 183, &banner, Some(7));
 }
 
-fn blit_scaled(
-    frame: &mut IndexedFrame,
-    src: &soe_video::PlanarImage,
-    sx: i32,
-    sy: i32,
-    sw: i32,
-    sh: i32,
-    dx: i32,
-    dy: i32,
-    dw: i32,
-    dh: i32,
-) {
-    if sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 {
-        return;
-    }
-    let src_w = i32::from(src.width);
-    for y in 0..dh {
-        let syy = sy + y * sh / dh;
-        if !(0..i32::from(src.height)).contains(&syy) {
-            continue;
-        }
-        for x in 0..dw {
-            let sxx = sx + x * sw / dw;
-            if !(0..src_w).contains(&sxx) {
-                continue;
-            }
-            let pixel = src.indices[(syy * src_w + sxx) as usize];
-            frame.set_pixel((dx + x) as u16, (dy + y) as u16, pixel);
-        }
-    }
-}
-
+/// Stone dialog window (`FUN_2036_0009`) drawn at `(x, y)` covering roughly
+/// `width` x `height`; returns the window's content origin in frame space.
 fn draw_panel(
     frame: &mut IndexedFrame,
-    src: &soe_video::PlanarImage,
+    session: &Session,
+    sheet: &soe_video::PlanarImage,
     x: i32,
     y: i32,
     width: i32,
     height: i32,
+) -> (i32, i32) {
+    let Some(style) = session.window_style() else {
+        fill_rect(frame, x as u16, y as u16, width as u16, height as u16, 5);
+        return (x + 0x1f, y + 5);
+    };
+    // FUN_1772_000e passes `(width + 7) & 0xfff8` for the inner width; the
+    // builder adds 0x20 for the two side columns.
+    let inner = ((width - 0x20).max(8) as u16 + 7) & 0xfff8;
+    let layout = style.layout(inner, height as u16, (x as u32) << 16 | y as u32);
+    draw_window_ops(frame, sheet, x, y, &layout.ops);
+    (x + i32::from(layout.content_x), y + i32::from(layout.content_y))
+}
+
+/// Execute window drawing operations against the `TITLE.RES#300` sheet.
+fn draw_window_ops(
+    frame: &mut IndexedFrame,
+    sheet: &soe_video::PlanarImage,
+    x: i32,
+    y: i32,
+    ops: &[WindowOp],
 ) {
-    let corner = 16
-        .min(i32::from(src.width) / 2)
-        .min(i32::from(src.height) / 2);
-    let sw = i32::from(src.width);
-    let sh = i32::from(src.height);
-    blit_scaled(
-        frame,
-        src,
-        corner,
-        corner,
-        sw - 2 * corner,
-        sh - 2 * corner,
-        x + corner,
-        y + corner,
-        width - 2 * corner,
-        height - 2 * corner,
-    );
-    blit_scaled(frame, src, 0, 0, corner, corner, x, y, corner, corner);
-    blit_scaled(
-        frame,
-        src,
-        sw - corner,
-        0,
-        corner,
-        corner,
-        x + width - corner,
-        y,
-        corner,
-        corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        0,
-        sh - corner,
-        corner,
-        corner,
-        x,
-        y + height - corner,
-        corner,
-        corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        sw - corner,
-        sh - corner,
-        corner,
-        corner,
-        x + width - corner,
-        y + height - corner,
-        corner,
-        corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        corner,
-        0,
-        sw - 2 * corner,
-        corner,
-        x + corner,
-        y,
-        width - 2 * corner,
-        corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        corner,
-        sh - corner,
-        sw - 2 * corner,
-        corner,
-        x + corner,
-        y + height - corner,
-        width - 2 * corner,
-        corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        0,
-        corner,
-        corner,
-        sh - 2 * corner,
-        x,
-        y + corner,
-        corner,
-        height - 2 * corner,
-    );
-    blit_scaled(
-        frame,
-        src,
-        sw - corner,
-        corner,
-        corner,
-        sh - 2 * corner,
-        x + width - corner,
-        y + corner,
-        corner,
-        height - 2 * corner,
-    );
+    for op in ops {
+        match *op {
+            WindowOp::Fill {
+                x: fx,
+                y: fy,
+                width,
+                height,
+                color,
+            } => {
+                for py in 0..i32::from(height) {
+                    for px in 0..i32::from(width) {
+                        let (dx, dy) = (x + i32::from(fx) + px, y + i32::from(fy) + py);
+                        if dx >= 0 && dy >= 0 {
+                            frame.set_pixel(dx as u16, dy as u16, color);
+                        }
+                    }
+                }
+            }
+            WindowOp::Piece {
+                src_x,
+                src_y,
+                width,
+                height,
+                x: px,
+                y: py,
+                mirror,
+            } => {
+                let sw = i32::from(sheet.width);
+                for row in 0..i32::from(height) {
+                    let sy = i32::from(src_y) + row;
+                    if sy >= i32::from(sheet.height) {
+                        break;
+                    }
+                    for col in 0..i32::from(width) {
+                        let sx = if mirror {
+                            i32::from(src_x) + i32::from(width) - 1 - col
+                        } else {
+                            i32::from(src_x) + col
+                        };
+                        if !(0..sw).contains(&sx) {
+                            continue;
+                        }
+                        let (dx, dy) = (x + i32::from(px) + col, y + i32::from(py) + row);
+                        if dx >= 0 && dy >= 0 {
+                            frame.set_pixel(dx as u16, dy as u16, sheet.indices[(sy * sw + sx) as usize]);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn draw_menu(frame: &mut IndexedFrame, session: &Session, panel: Option<&soe_video::PlanarImage>) {
     fill_rect(frame, 0, 0, 320, 200, 0);
     if let Some(panel) = panel {
-        draw_panel(frame, panel, 20, 40, 280, 96);
+        draw_panel(frame, session, panel, 20, 40, 280, 96);
     }
     let Some(font) = session.font() else {
         return;
     };
     font.draw_text(frame, 52, 58, "SPIRIT OF EXCALIBUR", Some(8));
-    font.draw_text(frame, 58, 78, "ENTER CONTINUE", Some(0));
-    font.draw_text(frame, 70, 92, "ESC QUIT", Some(0));
+    font.draw_text(frame, 58, 78, "ENTER CONTINUE", None);
+    font.draw_text(frame, 70, 92, "ESC QUIT", None);
 }
 
 fn draw_game_lost(frame: &mut IndexedFrame, session: &Session) {
@@ -1116,7 +1059,7 @@ fn draw_battle(
     };
     fill_rect(frame, 0, 0, 320, 13, 0);
     let Some(battle) = battle else {
-        font.draw_text(frame, 118, 90, "NO BATTLE", Some(0));
+        font.draw_text(frame, 118, 90, "NO BATTLE", None);
         return;
     };
 
@@ -1160,7 +1103,7 @@ fn draw_battle(
             fill_rect(frame, 118, (y - 1) as u16, 90, 9, 0);
             font.draw_text(frame, 122, y, order.label(), Some(7));
         } else {
-            font.draw_text(frame, 122, y, order.label(), Some(0));
+            font.draw_text(frame, 122, y, order.label(), None);
         }
     }
 
@@ -1173,7 +1116,7 @@ fn draw_battle(
             battle.total_strength(soe_engine::battle::Side::Player),
             battle.total_strength(soe_engine::battle::Side::Foe)
         ),
-        Some(0),
+        None,
     );
 
     fill_rect(frame, 118, 102, 196, 56, 2);
@@ -1289,15 +1232,12 @@ fn main() -> Result<()> {
         .map_or("EPISODE1.DAT", |pair| pair[1].as_str());
     let session = Session::load_save(&game_dir, &exe, scene_ids[start], save_name)?;
     let map = load_map(&game_dir)?;
-    let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
+    let panel = load_record_image(
+        &game_dir.join("RES32").join(window::SHEET_FILE),
+        window::SHEET_ID,
+    )
+    .ok();
     let story = HintBook::load(game_dir.join("HINT.RES")).ok();
-    let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
-    let audio = audio::AudioPlayer::new();
-    if let (Some(player), Some(library)) = (&audio, &music) {
-        if let Some(song) = library.map() {
-            player.play_score(&song.score);
-        }
-    }
     let mut runtime = Runtime::new(session, scene_ids, start, game_dir.clone(), exe.clone())
         .with_assets(map, panel, story);
     if start_map {
@@ -1339,10 +1279,49 @@ fn main() -> Result<()> {
         }
     }
 
+    if let Some(path) = args
+        .windows(2)
+        .find(|pair| pair[0] == "--screenshot")
+        .map(|pair| PathBuf::from(&pair[1]))
+    {
+        let app = App::new(runtime);
+        let (frame, palette) = app.compose_frame();
+        return write_screenshot(&path, &frame, &palette);
+    }
+
+    let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
+    let audio = audio::AudioPlayer::new();
+    if let (Some(player), Some(library)) = (&audio, &music) {
+        if let Some(song) = library.map() {
+            player.play_score(&song.score);
+        }
+    }
+
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::new(runtime);
     app.audio = audio;
     event_loop.run_app(&mut app).context("running window")?;
+    Ok(())
+}
+
+/// Write one logical frame as an indexed PNG (headless `--screenshot`).
+fn write_screenshot(path: &Path, frame: &IndexedFrame, palette: &[[u8; 3]]) -> Result<()> {
+    let mut pal = vec![0u8; 768];
+    for (index, color) in palette.iter().enumerate().take(256) {
+        pal[index * 3..index * 3 + 3].copy_from_slice(color);
+    }
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    let mut encoder = png::Encoder::new(
+        std::io::BufWriter::new(file),
+        u32::from(frame.width),
+        u32::from(frame.height),
+    );
+    encoder.set_color(png::ColorType::Indexed);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_palette(pal);
+    let mut writer = encoder.write_header()?;
+    writer.write_image_data(&frame.pixels)?;
     Ok(())
 }

@@ -46,3 +46,5 @@ pub mod story;
 pub mod battle;
 
 pub mod smus;
+
+pub mod window;
