@@ -35,6 +35,7 @@ The process needs the original game files; they remain git-ignored.
 | I | toggle the Round Table/items status screen |
 | M | toggle the world-map screen |
 | H | open the story/hint chronicle (arrows/click page, H closes) |
+| A | room action menu (arrows select, Enter, A closes) |
 | T | travel list (up/down select, Enter go, T closes) |
 | S | save/load browser (Enter load, F5 quick-save, S close) |
 | P | pause / close the pause panel |
@@ -51,6 +52,7 @@ Startup flags:
 --story     start in the story/hint chronicle
 --travel    start in the travel list
 --saves     start in the save/load browser
+--actions   start in the room action menu
 --paused    start with the pause panel open
 --save FILE load a specific .sav instead of EPISODE1.DAT
 ```

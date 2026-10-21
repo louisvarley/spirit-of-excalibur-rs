@@ -52,6 +52,8 @@ struct App {
     save_files: Vec<String>,
     save_index: usize,
     transition_start: Option<Instant>,
+    action_mode: bool,
+    action_index: usize,
 }
 
 impl App {
@@ -95,6 +97,8 @@ impl App {
             save_files,
             save_index: 0,
             transition_start: None,
+            action_mode: false,
+            action_index: 0,
         }
     }
 
@@ -170,7 +174,9 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.save_mode {
+        let mode = if self.action_mode {
+            "ACTIONS".to_string()
+        } else if self.save_mode {
             "SAVES".to_string()
         } else if self.travel_mode {
             "TRAVEL".to_string()
@@ -261,6 +267,16 @@ impl App {
         if self.save_mode {
             let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
             draw_saves(&mut copy, &self.session, &self.save_files, self.save_index);
+            display = Some(copy);
+        }
+        if self.action_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_actions(
+                &mut copy,
+                &self.session,
+                self.panel.as_ref(),
+                self.action_index,
+            );
             display = Some(copy);
         }
 
@@ -376,6 +392,38 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                if self.action_mode {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
+                            self.action_mode = false;
+                            self.update_title();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowLeft) => {
+                            self.action_index = self.action_index.saturating_sub(1);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowRight) => {
+                            self.action_index = (self.action_index + 1).min(11);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.action_index = self.action_index.saturating_sub(4);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            self.action_index = (self.action_index + 4).min(11);
+                        }
+                        PhysicalKey::Code(KeyCode::Enter) => {
+                            if self.action_index == 2 {
+                                self.action_mode = false;
+                                self.story_mode = true;
+                                self.story_page = 0;
+                            } else {
+                                self.action_mode = false;
+                            }
+                            self.update_title();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 if self.save_mode {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyS) => {
@@ -468,6 +516,11 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyS) => {
                         self.save_files = list_saves(&self.game_dir);
                         self.save_mode = true;
+                        self.update_title();
+                    }
+                    PhysicalKey::Code(KeyCode::KeyA) => {
+                        self.action_mode = true;
+                        self.action_index = 0;
                         self.update_title();
                     }
                     PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
@@ -578,6 +631,61 @@ fn draw_story(
         &format!("{}/{}", index + 1, story.paragraphs.len()),
         Some(color),
     );
+}
+
+fn draw_actions(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    selected: usize,
+) {
+    const ACTIONS: [&str; 12] = [
+        "Pickup", "Drop", "Talk", "Use", "Search", "Trade", "Request", "Magic", "Seize", "Give",
+        "Bribe", "Attack",
+    ];
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 0, 0, 320, 96);
+    } else {
+        fill_rect(frame, 0, 0, 320, 96, 0);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    let name = session
+        .state
+        .characters
+        .first()
+        .map(|character| character.name().to_ascii_uppercase())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "CONSTANTINE".to_string());
+    font.draw_text(
+        frame,
+        10,
+        6,
+        &format!("SELECT AN ACTION FOR SIR {name}:"),
+        Some(0),
+    );
+    for (index, action) in ACTIONS.iter().enumerate() {
+        let column = (index % 4) as i32;
+        let row = (index / 4) as i32;
+        let x = 12 + column * 76;
+        let y = 26 + row * 20;
+        fill_rect(
+            frame,
+            x as u16,
+            y as u16,
+            70,
+            15,
+            if index == selected { 0 } else { 7 },
+        );
+        font.draw_text(
+            frame,
+            x + 4,
+            y + 3,
+            action,
+            Some(if index == selected { 8 } else { 0 }),
+        );
+    }
 }
 
 fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], selected: usize) {
@@ -964,6 +1072,7 @@ fn main() -> Result<()> {
     app.paused = paused;
     app.travel_mode = args.iter().any(|arg| arg == "--travel");
     app.save_mode = args.iter().any(|arg| arg == "--saves");
+    app.action_mode = args.iter().any(|arg| arg == "--actions");
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }
