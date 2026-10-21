@@ -28,6 +28,9 @@ These confirm:
 - Text uses the `TITLE.RES#200` atlas with the UI palette.
 - The ornate map frame is `INTF.RES#501` (320x200, centre transparent).
 - Map screens combine a regional map, the frame, icons and text.
+- The scrolling background is the `INTF.RES#1` 72x60 tile table drawn with the
+  `INTF.RES#500` 16x16 tile atlas; location icons are `INTF#600..615`.
+  See `notes/WORLD_MAP.md`.
 - Dialogue/menu panels are drawn over the current room/map.
 
 ## `save-state.sav`

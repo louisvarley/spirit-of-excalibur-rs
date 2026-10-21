@@ -33,12 +33,12 @@ The process needs the original game files; they remain git-ignored.
 | Space | advance one animation frame |
 | R | reset animations to frame 0 |
 | I | toggle the Round Table/items status screen |
-| M | toggle the world-map screen |
+| M | toggle the regional map (arrows select, Enter travels, M/Esc closes) |
 | H | open the story/hint chronicle (arrows/click page, H closes) |
 | A | room action menu (arrows select, Enter, A closes) |
 | Click a room character | select that character and open their action menu |
 | Enter in dialogue | close, or apply the highlighted choice |
-| T | travel list (up/down select, Enter go, T closes) |
+| T | travel map (arrows select, Enter/click travels, T/Esc closes) |
 | S | save/load browser (Enter load, F5 quick-save, S close) |
 | P | pause / close the pause panel |
 | F2 | mute/unmute music |
@@ -53,7 +53,7 @@ Startup flags:
 --map       start in map view
 --status    start in status view
 --story     start in the story/hint chronicle
---travel    start in the travel list
+--travel    start in the travel map
 --saves     start in the save/load browser
 --actions   start in the room action menu
 --items     start in the item-selection panel

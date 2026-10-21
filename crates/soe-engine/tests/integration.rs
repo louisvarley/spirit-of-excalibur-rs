@@ -4,6 +4,18 @@ use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen, TRANSITION};
 use soe_engine::save::GameState;
 use soe_engine::session::Session;
 use soe_engine::story::HintBook;
+use soe_engine::worldmap::{markers, resolve_scene_id};
+
+fn scene_ids() -> Vec<u16> {
+    let file = soe_res::ResFile::parse(
+        std::fs::read(game_dir().join("SCENES.RES")).expect("read SCENES.RES"),
+    )
+    .expect("parse SCENES.RES");
+    let mut ids: Vec<u16> = file.records().iter().map(|record| record.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 fn example_runtime() -> Option<Runtime> {
     if !game_dir().join("EXAMPLE.SAV").exists() || !game_dir().join("RES32").exists() {
@@ -159,9 +171,100 @@ fn end_to_end_room_animation_save_font_story_travel() {
     let book = HintBook::load(game_dir().join("HINT.RES")).unwrap();
     assert!(book.paragraphs.len() > 100);
 
-    let locations = &session.state.locations;
-    assert_eq!(locations[0].name(), "Colchester");
-    assert_eq!(locations[0].scene_id(), Some(5));
+    let ids = scene_ids();
+    let available = |id: u16| ids.contains(&id);
+    let locations = markers(&session.state);
+    assert_eq!(locations[0].name, "Colchester");
+    // Colchester has no region-1 scene 101, so the loader falls back to scene 1.
+    assert_eq!(
+        resolve_scene_id(
+            locations[0].location_index,
+            locations[0].icon_id,
+            1,
+            available
+        ),
+        Some(1)
+    );
+    // Gloucester and London have explicit region-1 scenes.
+    assert_eq!(
+        resolve_scene_id(
+            locations[1].location_index,
+            locations[1].icon_id,
+            1,
+            available
+        ),
+        Some(102)
+    );
+    assert_eq!(
+        resolve_scene_id(
+            locations[4].location_index,
+            locations[4].icon_id,
+            1,
+            available
+        ),
+        Some(105)
+    );
+}
+
+#[test]
+fn every_location_resolves_to_a_scene_record() {
+    if !game_dir().join("EPISODE1.DAT").exists() {
+        eprintln!("SKIP: game data absent");
+        return;
+    }
+    let data = std::fs::read(game_dir().join("EPISODE1.DAT")).unwrap();
+    let state = GameState::parse(&data).unwrap();
+    let ids = scene_ids();
+    let available = |id: u16| ids.contains(&id);
+    let markers = markers(&state);
+    assert_eq!(markers.len(), 49);
+    for marker in &markers {
+        let scene = resolve_scene_id(marker.location_index, marker.icon_id, 1, available);
+        assert!(
+            scene.is_some_and(|id| available(id)),
+            "{} ({}) has no scene",
+            marker.name,
+            marker.icon_id
+        );
+    }
+}
+
+#[test]
+fn map_click_travels_to_the_clicked_marker() {
+    if !game_dir().join("EPISODE1.DAT").exists() {
+        eprintln!("SKIP: game data absent");
+        return;
+    }
+    let session = Session::load(game_dir(), exe_path(), 5).unwrap();
+    let ids = scene_ids();
+    let start = ids.iter().position(|id| *id == 5).unwrap();
+    let mut runtime = Runtime::new(
+        session,
+        ids,
+        start,
+        game_dir().to_path_buf(),
+        exe_path().to_path_buf(),
+    );
+    runtime.handle_key(Key::Travel);
+    let marker = runtime.map_markers()[runtime.travel_index()].clone();
+    let (camera_x, camera_y) = runtime.map_camera();
+    let x =
+        i16::try_from(soe_engine::worldmap::VIEW_X + i32::from(marker.world_x) - camera_x).unwrap();
+    let y =
+        i16::try_from(soe_engine::worldmap::VIEW_Y + i32::from(marker.world_y) - camera_y).unwrap();
+    let events = runtime.handle_click(x, y);
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, RuntimeEvent::SceneChanged(_))),
+        "click did not travel: {events:?}"
+    );
+    assert_eq!(runtime.current_location(), Some(marker.location_index));
+    runtime.tick(TRANSITION);
+    assert_eq!(runtime.screen(), Screen::Room);
+    runtime.handle_key(Key::Map);
+    assert_eq!(runtime.screen(), Screen::Map);
+    assert_eq!(runtime.selected_location(), Some(marker.location_index));
 }
 
 #[test]
@@ -172,15 +275,11 @@ fn runtime_routes_live_save_through_every_screen() {
     }
 
     let session = Session::load(game_dir(), exe_path(), 5).unwrap();
+    let ids = scene_ids();
+    let start = ids.iter().position(|id| *id == 5).unwrap();
     let temp = std::env::temp_dir().join(format!("soe-runtime-{}", std::process::id()));
     std::fs::create_dir_all(&temp).unwrap();
-    let mut runtime = Runtime::new(
-        session,
-        vec![4, 5, 6],
-        1,
-        temp.clone(),
-        exe_path().to_path_buf(),
-    );
+    let mut runtime = Runtime::new(session, ids, start, temp.clone(), exe_path().to_path_buf());
     assert_eq!(runtime.screen(), Screen::Room);
     assert_eq!(runtime.scene_id(), 5);
 
@@ -207,14 +306,28 @@ fn runtime_routes_live_save_through_every_screen() {
 
     runtime.handle_key(Key::Travel);
     assert_eq!(runtime.screen(), Screen::Travel);
-    runtime.handle_key(Key::Down);
+    let mut guard = 0;
+    while runtime.selected_location_name().as_deref() != Some("London") {
+        runtime.handle_key(Key::Down);
+        guard += 1;
+        assert!(guard < 64, "London marker not reachable");
+    }
     let events = runtime.handle_key(Key::Confirm);
-    assert!(events.contains(&RuntimeEvent::SceneChanged(4)));
+    assert!(events.contains(&RuntimeEvent::SceneChanged(105)));
     assert_eq!(runtime.state_code(), -3);
     runtime.tick(TRANSITION);
     assert_eq!(runtime.screen(), Screen::Room);
-    assert_eq!(runtime.scene_id(), 4);
+    assert_eq!(runtime.scene_id(), 105);
     assert_eq!(runtime.state_code(), -1);
+    assert_eq!(runtime.current_location_name().as_deref(), Some("London"));
+
+    // Returning to the map keeps the newly visited location current.
+    runtime.handle_key(Key::Map);
+    assert_eq!(runtime.screen(), Screen::Map);
+    assert_eq!(runtime.current_location_name().as_deref(), Some("London"));
+    assert_eq!(runtime.selected_location_name().as_deref(), Some("London"));
+    runtime.handle_key(Key::Map);
+    assert_eq!(runtime.screen(), Screen::Room);
 
     let events = runtime.handle_key(Key::QuickSave);
     assert!(events.contains(&RuntimeEvent::Saved("QUICK.SAV".to_string())));

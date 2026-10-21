@@ -34,13 +34,17 @@ Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
 
 ### Transitions
 
-- `Room` -> `Map` with `M`; `Map` -> `Room` with `M`, `Esc` or `Enter`.
+- `Room` -> `Map` with `M`; `Map` -> `Room` with `M` or `Esc`; `Enter` travels
+  to the selected marker.
 - `Room` -> `Status` with `I`; up/down selects a knight and `Enter` opens
   their live inventory. `I`/`Esc` closes. The panel decodes stats, purse, gear
   and prepared spells from the save state.
 - `Room` -> `Story` with `H`; arrows/space/click page, `H`/`Esc` closes.
-- `Room` -> `Travel` with `T`; up/down selects, `Enter` enters the location's
-  scene through `-3`, then returns to `Room` when the fade completes.
+- `Room` -> `Map`/`Travel` with `M`/`T`; both show the graphical regional map
+  (`INTF#1` tiles, `INTF#500` atlas, `INTF#501` frame). Arrows select markers,
+  `Enter`/click enters the location scene through `-3`, then the fade completes
+  into `Room`. `M`/`T`/`Esc` closes the map. Current location and camera are
+  tracked as the selected destination (see `notes/WORLD_MAP.md`).
 - `Room` -> `Save` with `S`; up/down selects, `Enter` loads, `F5` quick-saves,
   `S`/`Esc` closes. Loading replaces the session and returns to `Room`.
 - `Room` -> `Pause` with `P`; any key resumes the room.

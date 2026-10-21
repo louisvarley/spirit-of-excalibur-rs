@@ -37,6 +37,8 @@ pub mod session;
 
 pub mod runtime;
 
+pub mod worldmap;
+
 pub mod font;
 
 pub mod story;

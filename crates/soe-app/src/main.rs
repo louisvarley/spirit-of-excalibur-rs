@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 mod audio;
 
 use anyhow::{Context, Result};
-use soe_assets::Palette;
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
 use soe_engine::story::HintBook;
+use soe_engine::worldmap::WorldMap;
 use soe_video::{IndexedFrame, decode_planar};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -111,8 +111,19 @@ impl App {
         let fade = self.runtime.fade();
         let screen = self.runtime.screen();
 
-        let mut display = if screen == Screen::Map {
-            self.runtime.map().cloned()
+        let mut display = if matches!(screen, Screen::Map | Screen::Travel) {
+            let palette = &self.runtime.session().palettes().room;
+            let markers = self.runtime.map_markers();
+            self.runtime.map().and_then(|map| {
+                map.render(
+                    palette,
+                    self.runtime.map_camera(),
+                    &markers,
+                    self.runtime.selected_location(),
+                    self.runtime.current_location(),
+                )
+                .ok()
+            })
         } else {
             None
         };
@@ -155,14 +166,15 @@ impl App {
                 );
                 display = Some(copy);
             }
-            Screen::Travel => {
+            Screen::Map | Screen::Travel => {
                 let mut copy = display
                     .take()
                     .unwrap_or_else(|| self.runtime.session().frame.clone());
-                draw_travel(
+                draw_world_map(
                     &mut copy,
                     self.runtime.session(),
-                    self.runtime.travel_index(),
+                    self.runtime.selected_location_name().as_deref(),
+                    self.runtime.current_location_name().as_deref(),
                 );
                 display = Some(copy);
             }
@@ -298,7 +310,7 @@ impl App {
                 draw_game_lost(&mut copy, self.runtime.session());
                 display = Some(copy);
             }
-            Screen::Room | Screen::Map | Screen::Quit => {}
+            Screen::Room | Screen::Quit => {}
         }
 
         let Some(surface) = &mut self.surface else {
@@ -786,44 +798,26 @@ fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], sel
     );
 }
 
-fn draw_travel(frame: &mut IndexedFrame, session: &Session, selected: usize) {
-    fill_rect(frame, 0, 0, 320, 200, 0);
+fn draw_world_map(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    selected: Option<&str>,
+    current: Option<&str>,
+) {
     let Some(font) = session.font() else {
         return;
     };
-    font.draw_text(frame, 8, 6, "TRAVEL", Some(8));
-    font.draw_text(frame, 60, 6, "ENTER GO  T CLOSE  UP/DOWN", Some(8));
-    let locations: Vec<_> = session
-        .state
-        .locations
-        .iter()
-        .filter(|location| !location.name().is_empty())
-        .collect();
-    if locations.is_empty() {
-        font.draw_text(frame, 8, 24, "NO LOCATIONS", Some(8));
-        return;
-    }
-    let selected = selected.min(locations.len() - 1);
-    let page = selected / 13;
-    for row in 0..13 {
-        let index = page * 13 + row;
-        let Some(location) = locations.get(index) else {
-            break;
-        };
-        let marker = if index == selected { "*" } else { " " };
-        let scene = location
-            .scene_id()
-            .map_or_else(|| "--".to_string(), |id| id.to_string());
-        let line = format!("{marker}{:<18} {}", location.name(), scene);
-        font.draw_text(frame, 8, 20 + row as i32 * 12, &line, Some(8));
-    }
-    font.draw_text(
-        frame,
-        220,
-        188,
-        &format!("PAGE {}/{}", page + 1, locations.len().div_ceil(13)),
-        Some(8),
-    );
+    let selected = selected
+        .filter(|name| !name.is_empty())
+        .map_or_else(|| "NO LOCATIONS".to_string(), str::to_ascii_uppercase);
+    font.draw_text(frame, 20, 18, "ENTER TRAVEL   T CLOSE   ARROWS", Some(0));
+    let banner = match current.filter(|name| !name.is_empty()) {
+        Some(current) => format!("{}   AT {}", selected, current.to_ascii_uppercase()),
+        None => selected,
+    };
+    let width = u32::try_from(banner.len()).unwrap_or(0) * 8;
+    let x = 160i32 - i32::try_from(width / 2).unwrap_or(0);
+    font.draw_text(frame, x.clamp(18, 250), 183, &banner, Some(7));
 }
 
 fn blit_scaled(
@@ -1123,32 +1117,14 @@ fn load_record_image(path: &Path, id: u16) -> Result<soe_video::PlanarImage> {
         .with_context(|| format!("decoding record {id} from {}", path.display()))
 }
 
-fn load_map(game_dir: &Path, palette: &Palette) -> Result<Option<IndexedFrame>> {
-    let res32 = game_dir.join("RES32");
-    let background = res32.join("ENGLAND.RES");
-    let frame_path = res32.join("INTF.RES");
-    if !background.exists() || !frame_path.exists() {
+fn load_map(game_dir: &Path) -> Result<Option<WorldMap>> {
+    let path = game_dir.join("RES32").join("INTF.RES");
+    if !path.exists() {
         return Ok(None);
     }
-    let background = load_record_image(&background, 510)?;
-    let frame = load_record_image(&frame_path, 501)?;
-    if background.width != 320
-        || background.height != 200
-        || frame.width != 320
-        || frame.height != 200
-    {
-        return Ok(None);
-    }
-    let mut out = IndexedFrame::new(320, 200, background.indices, palette.clone())?;
-    for y in 0..200u16 {
-        for x in 0..320u16 {
-            let pixel = frame.indices[usize::from(y) * 320 + usize::from(x)];
-            if pixel != 0 {
-                out.set_pixel(x, y, pixel);
-            }
-        }
-    }
-    Ok(Some(out))
+    WorldMap::load(&path)
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!(error))
 }
 
 fn main() -> Result<()> {
@@ -1183,7 +1159,7 @@ fn main() -> Result<()> {
         .find(|pair| pair[0] == "--save")
         .map_or("EPISODE1.DAT", |pair| pair[1].as_str());
     let session = Session::load_save(&game_dir, &exe, scene_ids[start], save_name)?;
-    let map = load_map(&game_dir, &session.palettes().room)?;
+    let map = load_map(&game_dir)?;
     let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
     let story = HintBook::load(game_dir.join("HINT.RES")).ok();
     let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();

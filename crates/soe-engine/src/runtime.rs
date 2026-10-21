@@ -12,12 +12,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use soe_video::{IndexedFrame, LOGICAL_WIDTH, PlanarImage};
+use soe_video::{LOGICAL_WIDTH, PlanarImage};
 
 use crate::economy::InventoryEntry;
 use crate::interaction::{Dialogue, character_name};
 use crate::session::Session;
 use crate::story::HintBook;
+use crate::worldmap::{self, LocationMarker, WorldMap};
 
 /// One room animation frame (18.2 Hz).
 pub const TICK: Duration = Duration::from_micros(54_945);
@@ -174,11 +175,16 @@ pub struct Runtime {
     scene_index: usize,
     game_dir: PathBuf,
     exe: PathBuf,
-    map: Option<IndexedFrame>,
+    map: Option<WorldMap>,
     panel: Option<PlanarImage>,
     story: Option<HintBook>,
     story_page: usize,
+    /// Index into the filtered marker list shown on the map.
     travel_index: usize,
+    /// 0-based row in the save location table.
+    current_location: Option<usize>,
+    map_camera: (i32, i32),
+    map_region: u16,
     save_files: Vec<String>,
     save_index: usize,
     action_index: usize,
@@ -209,6 +215,26 @@ impl Runtime {
     ) -> Self {
         let game_dir = game_dir.into();
         let selected_character = session.state.default_character();
+        let markers = worldmap::markers(&session.state);
+        let party_position = session
+            .state
+            .characters
+            .get(selected_character)
+            .map_or((0, 0), |character| {
+                (character.world_x(), character.world_y())
+            });
+        let current_location =
+            worldmap::nearest_location(&markers, party_position.0, party_position.1);
+        let travel_index = current_location
+            .and_then(|location| {
+                markers
+                    .iter()
+                    .position(|marker| marker.location_index == location)
+            })
+            .unwrap_or(0);
+        let map_camera = markers.get(travel_index).map_or((0, 0), |marker| {
+            worldmap::camera_for(marker.world_x, marker.world_y)
+        });
         let mut runtime = Self {
             scene_ids,
             scene_index,
@@ -222,7 +248,10 @@ impl Runtime {
             panel: None,
             story: None,
             story_page: 0,
-            travel_index: 0,
+            travel_index,
+            current_location,
+            map_camera,
+            map_region: 1,
             save_index: 0,
             action_index: 0,
             item_index: 0,
@@ -260,7 +289,7 @@ impl Runtime {
     #[must_use]
     pub fn with_assets(
         mut self,
-        map: Option<IndexedFrame>,
+        map: Option<WorldMap>,
         panel: Option<PlanarImage>,
         story: Option<HintBook>,
     ) -> Self {
@@ -298,8 +327,54 @@ impl Runtime {
     }
 
     #[must_use]
-    pub fn map(&self) -> Option<&IndexedFrame> {
+    pub fn map(&self) -> Option<&WorldMap> {
         self.map.as_ref()
+    }
+
+    /// Travel destinations from the location table, in save-file order.
+    #[must_use]
+    pub fn map_markers(&self) -> Vec<LocationMarker> {
+        worldmap::markers(&self.session.state)
+    }
+
+    /// Camera top-left in world pixels.
+    #[must_use]
+    pub const fn map_camera(&self) -> (i32, i32) {
+        self.map_camera
+    }
+
+    /// 0-based row of the party's current location in the save table.
+    #[must_use]
+    pub const fn current_location(&self) -> Option<usize> {
+        self.current_location
+    }
+
+    #[must_use]
+    pub fn current_location_name(&self) -> Option<String> {
+        self.current_location
+            .and_then(|index| self.session.state.locations.get(index))
+            .map(crate::save::Location::name)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Location row highlighted on the map/travel screen.
+    #[must_use]
+    pub fn selected_location(&self) -> Option<usize> {
+        self.map_markers()
+            .get(self.travel_index)
+            .map(|marker| marker.location_index)
+    }
+
+    #[must_use]
+    pub fn selected_location_name(&self) -> Option<String> {
+        self.map_markers()
+            .get(self.travel_index)
+            .map(|marker| marker.name.clone())
+    }
+
+    /// Region prefix used by the original scene loader (`region * 100 + n`).
+    pub fn set_map_region(&mut self, region: u16) {
+        self.map_region = region.max(1);
     }
 
     #[must_use]
@@ -491,11 +566,8 @@ impl Runtime {
                 self.screen = Screen::Story;
                 self.story_page = 0;
             }
-            Screen::Travel => {
-                self.state = LoopState::Playing;
-                self.screen = Screen::Travel;
-                self.clamp_travel_index();
-            }
+            Screen::Map => self.open_map(Screen::Map),
+            Screen::Travel => self.open_map(Screen::Travel),
             Screen::Save => {
                 self.state = LoopState::Playing;
                 self.screen = Screen::Save;
@@ -522,6 +594,39 @@ impl Runtime {
                 self.state = LoopState::Playing;
                 self.screen = screen;
             }
+        }
+    }
+
+    /// Open the regional map/travel view centred on the current location.
+    pub fn open_map(&mut self, screen: Screen) {
+        self.state = LoopState::Playing;
+        self.screen = screen;
+        self.select_current_location();
+        self.center_map_on_selected();
+    }
+
+    fn select_current_location(&mut self) {
+        let markers = self.map_markers();
+        if markers.is_empty() {
+            self.travel_index = 0;
+            return;
+        }
+        if let Some(current) = self.current_location {
+            if let Some(index) = markers
+                .iter()
+                .position(|marker| marker.location_index == current)
+            {
+                self.travel_index = index;
+                return;
+            }
+        }
+        self.travel_index = self.travel_index.min(markers.len() - 1);
+    }
+
+    fn center_map_on_selected(&mut self) {
+        let markers = self.map_markers();
+        if let Some(marker) = markers.get(self.travel_index) {
+            self.map_camera = worldmap::camera_for(marker.world_x, marker.world_y);
         }
     }
 
@@ -713,13 +818,7 @@ impl Runtime {
                 self.close_modal();
                 vec![RuntimeEvent::ScreenChanged(Screen::Room)]
             }
-            Screen::Map => match key {
-                Key::Map | Key::Cancel | Key::Confirm => {
-                    self.close_modal();
-                    vec![RuntimeEvent::ScreenChanged(Screen::Room)]
-                }
-                _ => Vec::new(),
-            },
+            Screen::Map | Screen::Travel => self.handle_map_key(key),
             Screen::Status => match key {
                 Key::Status | Key::Cancel => {
                     self.close_modal();
@@ -752,23 +851,6 @@ impl Runtime {
                     self.story_page = self.story_page.wrapping_add(1);
                     Vec::new()
                 }
-                _ => Vec::new(),
-            },
-            Screen::Travel => match key {
-                Key::Travel | Key::Cancel => {
-                    self.close_modal();
-                    vec![RuntimeEvent::ScreenChanged(Screen::Room)]
-                }
-                Key::Up | Key::Left => {
-                    self.travel_index = self.travel_index.saturating_sub(1);
-                    Vec::new()
-                }
-                Key::Down | Key::Right => {
-                    self.travel_index = self.travel_index.saturating_add(1);
-                    self.clamp_travel_index();
-                    Vec::new()
-                }
-                Key::Confirm => self.travel_to_selected(),
                 _ => Vec::new(),
             },
             Screen::Save => match key {
@@ -964,6 +1046,36 @@ impl Runtime {
         }
     }
 
+    fn handle_map_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
+        match key {
+            Key::Map | Key::Travel | Key::Cancel => {
+                self.close_modal();
+                vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+            }
+            Key::Up | Key::Left => {
+                self.move_travel(-1);
+                Vec::new()
+            }
+            Key::Down | Key::Right => {
+                self.move_travel(1);
+                Vec::new()
+            }
+            Key::Confirm | Key::Space => self.travel_to_selected(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn move_travel(&mut self, delta: isize) {
+        let count = self.map_markers().len();
+        if count == 0 {
+            self.travel_index = 0;
+            return;
+        }
+        self.travel_index =
+            (self.travel_index as isize + delta).rem_euclid(count as isize) as usize;
+        self.center_map_on_selected();
+    }
+
     fn handle_room_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
         match key {
             Key::Cancel => self.request_quit(),
@@ -1020,15 +1132,7 @@ impl Runtime {
                 }
                 Vec::new()
             }
-            Screen::Travel => {
-                if left {
-                    self.travel_index = self.travel_index.saturating_sub(1);
-                } else {
-                    self.travel_index = self.travel_index.saturating_add(1);
-                    self.clamp_travel_index();
-                }
-                Vec::new()
-            }
+            Screen::Map | Screen::Travel => self.click_map(x, y),
             Screen::Status => {
                 self.move_character(if left { -1 } else { 1 });
                 Vec::new()
@@ -1069,6 +1173,41 @@ impl Runtime {
             }
             _ => Vec::new(),
         }
+    }
+
+    fn click_map(&mut self, x: i16, y: i16) -> Vec<RuntimeEvent> {
+        let markers = self.map_markers();
+        let hit = if let Some(map) = &self.map {
+            map.marker_at(self.map_camera, &markers, x, y)
+        } else {
+            let px = i32::from(x);
+            let py = i32::from(y);
+            markers
+                .iter()
+                .min_by_key(|marker| {
+                    let dx = worldmap::VIEW_X + i32::from(marker.world_x) - self.map_camera.0 - px;
+                    let dy = worldmap::VIEW_Y + i32::from(marker.world_y) - self.map_camera.1 - py;
+                    dx * dx + dy * dy
+                })
+                .filter(|marker| {
+                    let dx = worldmap::VIEW_X + i32::from(marker.world_x) - self.map_camera.0 - px;
+                    let dy = worldmap::VIEW_Y + i32::from(marker.world_y) - self.map_camera.1 - py;
+                    dx * dx + dy * dy <= 24 * 24
+                })
+                .map(|marker| marker.location_index)
+        };
+        let Some(location) = hit else {
+            return Vec::new();
+        };
+        if let Some(index) = markers
+            .iter()
+            .position(|marker| marker.location_index == location)
+        {
+            self.travel_index = index;
+            self.center_map_on_selected();
+            return self.travel_to_selected();
+        }
+        Vec::new()
     }
 
     fn character_indices(&self) -> Vec<usize> {
@@ -1259,6 +1398,29 @@ impl Runtime {
         }
     }
 
+    fn refresh_location_from_party(&mut self) {
+        let markers = self.map_markers();
+        let position = self
+            .session
+            .state
+            .characters
+            .get(self.selected_character)
+            .map_or((0, 0), |character| {
+                (character.world_x(), character.world_y())
+            });
+        self.current_location = worldmap::nearest_location(&markers, position.0, position.1);
+        if let Some(current) = self.current_location {
+            if let Some(index) = markers
+                .iter()
+                .position(|marker| marker.location_index == current)
+            {
+                self.travel_index = index;
+                self.map_camera =
+                    worldmap::camera_for(markers[index].world_x, markers[index].world_y);
+            }
+        }
+    }
+
     fn sync_scene_index(&mut self) {
         if let Some(index) = self
             .scene_ids
@@ -1271,35 +1433,29 @@ impl Runtime {
         }
     }
 
-    fn clamp_travel_index(&mut self) {
-        let count = self.travel_locations().len();
-        if count == 0 {
-            self.travel_index = 0;
-        } else {
-            self.travel_index = self.travel_index.min(count - 1);
-        }
-    }
-
-    fn travel_locations(&self) -> Vec<Option<u16>> {
-        self.session
-            .state
-            .locations
-            .iter()
-            .filter(|location| !location.name().is_empty())
-            .map(crate::save::Location::scene_id)
-            .collect()
-    }
-
     fn travel_to_selected(&mut self) -> Vec<RuntimeEvent> {
-        let locations = self.travel_locations();
-        let Some(Some(scene_id)) = locations.get(self.travel_index).copied() else {
+        let markers = self.map_markers();
+        let Some(marker) = markers.get(self.travel_index).cloned() else {
             return Vec::new();
+        };
+        let Some(scene_id) = worldmap::resolve_scene_id(
+            marker.location_index,
+            marker.icon_id,
+            self.map_region,
+            |id| self.scene_ids.contains(&id),
+        ) else {
+            return vec![RuntimeEvent::Error(format!(
+                "travel to {}: no scene record",
+                marker.name
+            ))];
         };
         match self.session.enter_scene(scene_id) {
             Ok(()) => {
                 if let Some(index) = self.scene_ids.iter().position(|id| *id == scene_id) {
                     self.scene_index = index;
                 }
+                self.current_location = Some(marker.location_index);
+                self.map_camera = worldmap::camera_for(marker.world_x, marker.world_y);
                 self.animation_accum = Duration::ZERO;
                 self.begin_screen_change(Screen::Room);
                 vec![RuntimeEvent::SceneChanged(scene_id)]
@@ -1338,6 +1494,7 @@ impl Runtime {
                 self.shop_seller = None;
                 self.notice.clear();
                 self.dialogue = None;
+                self.refresh_location_from_party();
                 self.sync_scene_index();
                 self.screen = Screen::Room;
                 self.state = LoopState::Playing;

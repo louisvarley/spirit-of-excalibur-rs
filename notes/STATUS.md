@@ -1,6 +1,6 @@
 # STATUS
 
-Updated: M3 main-loop runtime port.
+Updated: graphical regional map and travel.
 
 ## Read this first
 
@@ -30,9 +30,15 @@ Updated: M3 main-loop runtime port.
   fade transitions, room/map/status/story/travel/save/pause screens,
   keyboard/mouse navigation, quick save/load.
 - `HINT.RES` story reader (192 paragraphs) and original `INTF#621` panels.
-- Location travel list and save/load browser.
+- Graphical regional map: `INTF#1` 72x60 tile table, `INTF#500` tile atlas,
+  `INTF#501` frame, location markers from the save table, camera tracking and
+  location icons (`INTF#600..615`). See `notes/WORLD_MAP.md`.
+- Location travel by keyboard/click with faithful location -> scene mapping
+  (region scene, region-0 fallback, generic type scene), current-location
+  tracking and map return.
+- Save/load browser.
 - End-to-end engine integration test (room, animation, save, font, story,
-  travel).
+  map/travel, current location).
 - Main loop ported as `soe-engine::runtime::Runtime`: all screens are states,
   the original `-5`/`-4`/`-3`/`-2`/`-1` loop words are modelled, and
   room/map/status/story/travel/save/pause/action/item/spell/shop/target/
@@ -68,8 +74,8 @@ Updated: M3 main-loop runtime port.
 
 ## M4-M7
 
-- Travel is list-based; graphical regional map/camera/current-location tracking
-  remains.
+- Regional map/travel is graphical; real-time army movement, party sprites and
+  the exact icon-variant choice remain open (see `notes/WORLD_MAP.md`).
 - Events/NPCs: event table, Talk target and dialogue choices implemented.
   Per-scene trigger visibility and some event side effects remain open.
 - Inventory/economy/magic/trade: implemented; exact price bargaining and a few

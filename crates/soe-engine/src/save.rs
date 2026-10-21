@@ -157,6 +157,18 @@ impl Character {
         u16::from_le_bytes([self.raw[Self::PRESENCE], self.raw[Self::PRESENCE + 1]])
     }
 
+    /// Current world X (`+0x2A` in the save record).
+    #[must_use]
+    pub fn world_x(&self) -> u16 {
+        u16::from_le_bytes([self.raw[0x2A], self.raw[0x2B]])
+    }
+
+    /// Current world Y (`+0x2C` in the save record).
+    #[must_use]
+    pub fn world_y(&self) -> u16 {
+        u16::from_le_bytes([self.raw[0x2C], self.raw[0x2D]])
+    }
+
     /// Whether the original would include this record in the room list.
     #[must_use]
     pub fn is_present(&self) -> bool {
@@ -230,19 +242,20 @@ impl Location {
         u16::from_le_bytes([self.raw[0x16], self.raw[0x17]])
     }
 
-    /// Scene record used when travelling here.
+    /// Map icon resource id (`INTF#600..=615` in the shipped data).
+    #[must_use]
+    pub fn icon_id(&self) -> u16 {
+        self.kind() & 0x0FFF
+    }
+
+    /// Legacy type-code scene guess.
     ///
-    /// Locations use kinds `600..=614`; the low value maps to `SCENES.RES`
-    /// ids `60` and `1..=14` respectively. This mapping is provisional but
-    /// matches the observed Colchester/kind 605 -> scene 5 case.
+    /// Travel now resolves scenes from the *location number* with
+    /// [`crate::worldmap::resolve_scene_id`]; this method is kept only for
+    /// callers that want the generic type mapping.
     #[must_use]
     pub fn scene_id(&self) -> Option<u16> {
-        match self.kind() {
-            600 => Some(60),
-            kind @ 601..=660 => Some(kind - 600),
-            id @ 1..=60 => Some(id),
-            _ => None,
-        }
+        crate::worldmap::generic_scene_for_icon(self.icon_id())
     }
 }
 
@@ -563,7 +576,11 @@ mod tests {
         assert_eq!(state.characters[0].name(), "Constantine");
         assert_eq!(state.characters[1].name(), "Bedivere");
         assert_eq!(state.locations[0].name(), "Colchester");
-        assert_eq!(state.locations[0].scene_id(), Some(5));
+        assert_eq!(state.locations[0].icon_id(), 605);
+        assert_eq!(
+            (state.locations[0].world_x(), state.locations[0].world_y()),
+            (993, 475)
+        );
         assert_eq!(state.items[0].name(), "gold besant");
         assert_eq!(state.spells[0].name(), "Repletion");
         assert_eq!(state.tail22.len(), 22);
