@@ -24,6 +24,7 @@ use soe_video::{IndexedFrame, PlanarImage};
 /// left overhang, `width = word >> 12`. Advance is
 /// `width + spacing - bit10 - bit11`.
 /// Atlas index of the glyph body in `TITLE.RES#200`.
+#[cfg(test)]
 const ATLAS_STROKE: u8 = 2;
 /// Atlas index of the light drop highlight under each stroke.
 const ATLAS_HIGHLIGHT: u8 = 6;
