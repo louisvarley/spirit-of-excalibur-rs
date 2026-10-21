@@ -52,3 +52,4 @@ pub mod travel;
 pub mod encounter;
 pub mod mapsim;
 pub mod names;
+pub mod arrival;

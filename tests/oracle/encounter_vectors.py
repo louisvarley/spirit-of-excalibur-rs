@@ -129,6 +129,7 @@ def record(snap: str, ticks: int, click: tuple[int, int] | None,
             m.push(SENTINEL[1])
             m.w("cs", 0x2920 - 0x1000 + LOAD_SEG)
             m.w("ip", 0x0A12)
+            m.w("flags", m.r("flags") | 0x200)  # snapshot may be inside an IRQ
             for _ in range(150):
                 m.run(1)
                 if done["hit"]:

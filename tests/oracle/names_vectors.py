@@ -48,6 +48,7 @@ def main(argv: list[str]) -> int:
         m.push(SENTINEL[1])
         m.w("cs", seg - 0x1000 + LOAD_SEG)
         m.w("ip", off)
+        m.w("flags", m.r("flags") | 0x200)  # snapshot may be inside an IRQ
         for _ in range(20):
             m.run(1)
             if done["hit"]:
