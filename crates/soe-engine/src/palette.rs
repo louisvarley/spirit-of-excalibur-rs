@@ -29,6 +29,7 @@ pub const DGROUP_OFFSET: usize = 0x23640;
 pub const ROOM_DS: usize = 0x2099;
 pub const MAP_DS: usize = 0x20f9;
 pub const UI_DS: usize = 0x2159;
+pub const MAP_REGION_DS: usize = 0x2039;
 pub const PALETTE_BYTES: usize = 96;
 const RAW_START: usize = 0x1f79;
 const RAW_END: usize = 0x23e7;
@@ -179,6 +180,21 @@ impl PaletteSet {
                 };
                 [r * 17, g * 17, b * 17]
             })
+            .collect();
+        Palette::new(colors)
+    }
+
+    /// Regional map palette: the table at `DS 0x2039` that `FUN_2d65_1297`
+    /// selects (`2d65:12ab`, `DS:8E5D = 0x2039`) before the map is drawn.
+    /// Earlier notes called it a copy of `0x2099`; it is not (forest greens,
+    /// parchment oranges).
+    #[must_use]
+    pub fn regional_map(&self) -> Palette {
+        if self.raw.is_empty() {
+            return self.room.clone();
+        }
+        let colors = (0..32)
+            .map(|index| self.triple(MAP_REGION_DS + index * 3).map(|v| v * 17))
             .collect();
         Palette::new(colors)
     }
