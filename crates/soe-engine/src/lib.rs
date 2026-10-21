@@ -49,3 +49,4 @@ pub mod smus;
 
 pub mod window;
 pub mod travel;
+pub mod encounter;

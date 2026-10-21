@@ -117,3 +117,36 @@ arrival `DS:0672 = 2920:026C`, wake `DS:0676 = 2920:06A3`.
 On the original map only the party (widget 11) had a target during these
 runs; clicking a location away from the party starts travel, clicking the
 party's own location shows an info line ("King Clariance is at York").
+
+## Encounters (`FUN_2920_0a12`) — ported, oracle-verified (partial coverage)
+
+The framework's collision callback (`DS:067A`, installed by `FUN_2d65_2cd9`)
+is `FUN_2920_0a12(first, second)`, called when two map entities meet. Ported
+as `soe-engine::encounter::fun_2920_0a12`, with `FUN_2d65_09d4` (location at an
+exact map position, 0..=60, else 0) as `location_at`.
+
+Verified against 126 original calls (`tests/oracle/encounter_vectors.py
+travel1:600 cont0:700:130:53 pairs=travel3`): two real encounters from play
+and 124 direct calls of the party against every character. Not yet covered:
+calls where `FUN_20b5_2c06` starts a fight (they do not return to the harness
+because the battle waits for input) and the random escape (`rand(100) >
+name+0x18`).
+
+Character fields (relative to the name pointer `DS:2C5E + 0x38*id`): `+0x16`
+flags (`0x100` evasive, `0x200` party side, `0x400`, `0x700` mask, `0x800`
+feminine prefix, `0x7000` side, `0x8000` cannot talk), `+0x18` escape chance,
+`+0x1E` count, `+0x20`/`+0x22` home (`0x2BE` with 0 = no choice dialog),
+`+0x26` kind (4 = can start an encounter). Locations: `DS:40B6 + 0x19*i`,
+position `+0x12/+0x14`, flags `+0x16` (`0x8000` blocks non-party meetings).
+
+Rules in order: clock `>= 0xA00`; not both `0x400`; if neither has `0x700`,
+the side whose kind is 4 gets `0x200` (else ignore); evasive second side rolls
+`rand(100)` against its escape byte; no meetings within 24 px of
+(`0x2D2`, `0x2B0`); sides must be 0, 6 or 7; protected locations; then
+`FUN_20b5_2c06` may start a fight. The original does not null-check the entity
+pointers before the location test (a missing entity reads `0000:0010`).
+Otherwise the party side speaks first, or whoever stood still is the one met.
+Buttons: "Stop to talk to <name>" (unless `0x8000`), "Join Forces" (both
+`0x200`), "Continue on". The pronoun table at `DS:79E0` (he/she/they/they) is
+indexed by (`0x800`, count > 1). Noun phrases come from `FUN_15b8_16fe`
+("a " for a townsman); not ported yet.
