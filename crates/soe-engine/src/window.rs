@@ -233,7 +233,8 @@ impl WindowStyle {
         let inner_h = (lower.wrapping_sub(y0) as i16).wrapping_sub(10);
         let inner_w = (right.wrapping_sub(x0) as i16).wrapping_sub(0xb);
         if inner_h > 0 && inner_w > 0 {
-            let count = (i32::from(inner_h) * i32::from(inner_w) / 100) as i16;
+            // 2036:0729: MUL keeps the low word, then CWD/IDIV 100 (signed).
+            let count = ((inner_h as u16).wrapping_mul(inner_w as u16) as i16) / 100;
             for color in [self.color(0x1f57), self.color(0x1f56)] {
                 for _ in 0..count {
                     let dy = rng.below(inner_h as u16);
