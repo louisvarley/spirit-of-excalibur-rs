@@ -45,6 +45,19 @@ pub fn compose_scene(
 
 /// Blit an indexed image, skipping palette index 0 and clipping to the frame.
 pub(crate) fn blit_transparent(frame: &mut IndexedFrame, image: &PlanarImage, x: i32, y: i32, flip_x: bool) {
+    blit_remapped(frame, image, x, y, flip_x, None);
+}
+
+/// [`blit_transparent`] with an optional index remap applied to every
+/// non-zero source pixel (MCGA.DVR `drv_0`, flag 2).
+pub(crate) fn blit_remapped(
+    frame: &mut IndexedFrame,
+    image: &PlanarImage,
+    x: i32,
+    y: i32,
+    flip_x: bool,
+    remap: Option<&[u8; 32]>,
+) {
     let width = i32::from(image.width);
     for sy in 0..i32::from(image.height) {
         let dy = y + sy;
@@ -59,6 +72,7 @@ pub(crate) fn blit_transparent(frame: &mut IndexedFrame, image: &PlanarImage, x:
             let source_x = if flip_x { width - 1 - sx } else { sx };
             let index = image.indices[(sy * width + source_x) as usize];
             if index != 0 {
+                let index = remap.map_or(index, |table| table.get(usize::from(index)).copied().unwrap_or(index));
                 frame.set_pixel(dx as u16, dy as u16, index);
             }
         }

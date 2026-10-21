@@ -272,3 +272,36 @@ key copies the character records back to the map.
   - The host clock advances one tick per 4,096 reads within a frame, so
     `066a`'s deadline still trips.
   - The random generator is a stand-in.
+
+## The loser and the colours (ported 2026-10-21)
+
+- `FUN_20b5_1705(widget, flag)` handles a unit leaving the fight. It looks for a
+  new opponent on the other side (waiting units first). If anyone is still
+  fighting, it waits. Otherwise it ends the battle:
+  - sets `DS:01EE`, sets `DS:9CAC`, and puts the close time at `DS:0322`
+    (clock + 0xB4, about 3 s);
+  - plays the music (`DS:6168` or `BTLLOST` at `DS:616F`);
+  - settles each unit by its slot state through the `CS:1A03` table:
+    fighters to step 0x14 or 0, the dead through `FUN_20b5_1229`, and for the
+    wounded and the fled, stat changes and map moves (`1b06_06b5`/`071c`).
+- `FUN_20b5_1229` is the dead character's bookkeeping. Followers pass to an
+  heir, the position goes to the top leader, flag 8 and strength are cleared,
+  and the first matching death event in `DS:46AB` is raised
+  (`FUN_26c5_000b`).
+- Both are in `combat.rs`; `script_hook` runs `1705` after a step that emits
+  Rout-on-actor. Verified on the recorded end of the duel
+  (`tests/oracle/rout_vectors.py`; one call, flag 1). Not yet covered by any
+  recording: the new-opponent search, the wait, and slot states 8, 0x10 and
+  0x20. Opcode 5's target rout check is still a stand-in.
+- `FUN_20b5_1057` drops the dead unit's items when `DS:9DF6` is set. Each
+  qualifying item has a 40% chance; it leaves the inventory (`1ba8_01ff`,
+  returned as an event) and is spawned as a still image near the body.
+  Ported from the disassembly. **Unverified**: no recorded loser carried
+  anything. The duel test gives both champions an item to exercise the path.
+- Colour remap: the scene draw passes widget `+0C` to `FUN_14b0_0bbf`, which
+  gives MCGA.DVR the 32-byte table at the far pointer `DS:29A4[+0C]`.
+  `drv_0` flag 2 then draws each non-zero pixel `p` as `table[p]`; `+0C` = 0
+  means no remap. Lupinus (`+0C` 0x19) is drawn black, as in the original.
+- In the Rust build the duel ends as the original does: once `1705` sets
+  `DS:01EE` and the close time passes. By then the loser has collapsed
+  (step 0x0C) and the winner has walked off (step 0x14).

@@ -51,8 +51,8 @@ pub enum CombatEvent {
     UnitHit { id: u8, slot: u16 },
     /// `FUN_20b5_1057(id)`: a unit died.
     DeadUnit(u8),
-    /// `FUN_1ba8_2611(stat, id, 1)`.
-    StatChange { stat: u16, id: u8 },
+    /// `FUN_1ba8_2611(stat, id, delta)`.
+    StatChange { stat: u16, id: u8, delta: u16 },
     /// `FUN_15b8_11ac`: the dead mark next to a list entry.
     Mark { slot: u16 },
     /// `FUN_26c5_041b(a, b, delta)` called directly.
@@ -61,6 +61,18 @@ pub enum CombatEvent {
     Rout { actor: bool, flag: u16 },
     /// Opcode 7: the battle scene starts.
     BattleStart,
+    /// `FUN_1316_187b(name, number, 0)`: start a music piece (name is a
+    /// DGROUP string offset).
+    Music { name: u16, number: u16 },
+    /// A battle UI call (`FUN_1772_0623`, `FUN_15b8_1876(2)`,
+    /// `FUN_1772_072b`), by offset.
+    Ui(u16),
+    /// `FUN_26c5_000b(a, b)`: a story event raised by a death.
+    StoryEvent { a: u8, b: u16 },
+    /// `FUN_1ba8_01ff(item, owner)`: a dead unit dropped an item.
+    ItemDropped { item: u8, owner: u8 },
+    /// `FUN_1b06_06b5` / `FUN_1b06_071c` on the map, with their arguments.
+    MapEvent { call: u16, args: [u16; 3] },
 }
 
 /// Inputs from the rest of the game.
@@ -71,6 +83,322 @@ pub trait CombatWorld {
     fn rout_check(&mut self) -> bool;
     /// `FUN_2d65_0a2a(id)`: location of the character's top leader.
     fn location_of(&self, ds: &[u8], id: u8) -> u8;
+}
+
+/// `FUN_20b5_1229`: bookkeeping for dead character `id`. Followers
+/// (`+0x31`) pass to the first of them, who takes the dead leader's
+/// position (and, with the same `0x700` allegiance, its target, `+0x18` and
+/// `+0x32..+0x37`); anyone targeting it (`+0x18`) stops. A dead leader's
+/// map position becomes its top leader's (`FUN_2d65_09a2`) or 0 when still
+/// standing. Flag 8 (in the field), strength `+0x1E` and the leader link
+/// are cleared. The first matching death event in the table at `DS:46AB`
+/// (6-byte entries) is raised (`FUN_26c5_000b`) and may end the battle.
+pub fn fun_20b5_1229(ds: &mut [u8], id: u8, ev: &mut Vec<CombatEvent>) -> u8 {
+    let r = rec(id);
+    let mut heir = ds[r + 0x31];
+    for l in 1..0x5du8 {
+        let rl = rec(l);
+        if ds[rl + 0x18] == id {
+            ds[rl + 0x18] = 0;
+        }
+        if ds[rl + 0x31] == id {
+            if heir == 0 {
+                heir = l;
+                ds[rl + 0x31] = 0;
+                let pos = [word(ds, r + 0x0e), word(ds, r + 0x10)];
+                set_word(ds, rl + 0x0e, pos[0]);
+                set_word(ds, rl + 0x10, pos[1]);
+                if word(ds, rl + 0x16) & 0x700 == word(ds, r + 0x16) & 0x700 {
+                    let target = [word(ds, r + 0x12), word(ds, r + 0x14)];
+                    set_word(ds, rl + 0x12, target[0]);
+                    set_word(ds, rl + 0x14, target[1]);
+                    ds[rl + 0x18] = ds[r + 0x18];
+                    for k in 0..6 {
+                        ds[rl + 0x32 + k] = ds[r + 0x32 + k];
+                    }
+                }
+            } else {
+                ds[rl + 0x31] = heir;
+            }
+        }
+    }
+    if ds[r + 0x2c] == 0 {
+        if heir != 0 {
+            // FUN_2d65_09a2: top of the leader chain.
+            let mut top = id;
+            while ds[rec(top) + 0x31] != 0 {
+                top = ds[rec(top) + 0x31];
+            }
+            let pos = [word(ds, rec(top) + 0x0e), word(ds, rec(top) + 0x10)];
+            set_word(ds, r + 0x0e, pos[0]);
+            set_word(ds, r + 0x10, pos[1]);
+        }
+    } else {
+        set_word(ds, r + 0x0e, 0);
+        set_word(ds, r + 0x10, 0);
+    }
+    let f = word(ds, r + 0x16) & 0xfff7;
+    set_word(ds, r + 0x16, f);
+    set_word(ds, r + 0x1e, 0);
+    ds[r + 0x31] = 0;
+    if ds[0x9cad] == 0 {
+        for l in 0..0x50usize {
+            let e = 0x46ab + l * 6;
+            let kind = word(ds, e + 2);
+            if ds[e] == id && kind & 0x0f == 0 && kind & 0x8000 != 0 {
+                ds[0x9cad] = l as u8;
+                ev.push(CombatEvent::StoryEvent { a: ds[e + 1], b: word(ds, e + 4) });
+                if kind & 0x80 != 0 {
+                    ds[0x9cac] = 1;
+                }
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+/// `FUN_20b5_1705(widget, flag)`: a unit left the fight (it won, or its
+/// opponent fled). With `flag`, look on the other side for a new opponent:
+/// units waiting (slot state 0x40) first, then idle ones (0). Kind 1, 4, 5
+/// and 0x0C units are sent off (state 0x10, step 0x18); a unit either side
+/// dislikes (`FUN_26c5_041b` < 0x28) is engaged (returns 1); on the foe
+/// side the rest stand aside. If someone there is still fighting (state &
+/// 3), the unit waits (step 0x14 for the party, 5 for foes). Otherwise the
+/// battle is over: music, a 3-second close (`DS:0322`), and every unit's
+/// outcome by its slot state (`CS:1A03` table): fighters stand down, the
+/// dead get [`fun_20b5_1229`], the wounded and fled get stat changes and
+/// map moves. `stale_bp1` is the uninitialised `[BP-1]` the end path reads
+/// when `flag` is 0.
+pub fn fun_20b5_1705(
+    scene: &mut crate::script::ScriptScene,
+    at: usize,
+    flag: u8,
+    stale_bp1: u8,
+    ds: &mut [u8],
+    world: &mut impl CombatWorld,
+) -> (u8, Vec<CombatEvent>) {
+    let mut ev = Vec::new();
+    let aid = scene.widgets[at][0x0a];
+    let aslot = ww(&scene.widgets[at], 0x34);
+    let mut other_side = stale_bp1;
+    let set = |w: &mut Widget, step: u8, target: Option<u16>| {
+        w[0x27] = step;
+        set_timer(w, 0);
+        if let Some(t) = target {
+            w[0x2e..0x30].copy_from_slice(&t.to_le_bytes());
+        }
+    };
+    if flag != 0 {
+        let count;
+        if aslot < 0x14 {
+            count = ds[0x9dad];
+            other_side = 0x14;
+        } else {
+            count = ds[0x9dac];
+            other_side = 0;
+        }
+        for want in [0x40u8, 0] {
+            for c in 0..count {
+                let s = usize::from(other_side) + usize::from(c);
+                if ds[SLOTS + s] != want {
+                    continue;
+                }
+                let uid = ds[0x9dc3 + s];
+                let Some(w) = scene.find(0x200, 0, u16::from(uid)) else { continue };
+                let kind = ds[rec(uid) + 0x26];
+                if matches!(kind, 1 | 4 | 5 | 0x0c) {
+                    ds[SLOTS + s] = 0x10;
+                    set(&mut scene.widgets[w], 0x18, Some(u16::from(aid)));
+                    continue;
+                }
+                if fun_26c5_041b(ds, aid, uid, 0) < 0x28 || fun_26c5_041b(ds, uid, aid, 0) < 0x28 {
+                    ds[slot_at(aslot)] = 1;
+                    set(&mut scene.widgets[at], 7, Some(u16::from(uid)));
+                    ds[SLOTS + s] = 1;
+                    set(&mut scene.widgets[w], 6, Some(u16::from(aid)));
+                    return (1, ev);
+                }
+                if other_side != 0 {
+                    ds[SLOTS + s] = 0x10;
+                    set(&mut scene.widgets[w], 0x18, None);
+                }
+            }
+        }
+        for c in 0..count {
+            if ds[SLOTS + usize::from(other_side) + usize::from(c)] & 3 != 0 {
+                ds[slot_at(aslot)] = 0;
+                let step = if other_side != 0 { 0x14 } else { 5 };
+                set(&mut scene.widgets[at], step, Some(0));
+                return (0, ev);
+            }
+        }
+    }
+    ds[0x9cac] = 1;
+    set_word(ds, 0x9c58, 0);
+    let close = clock(ds).wrapping_add(0xb4);
+    ds[0x0322..0x0326].copy_from_slice(&close.to_le_bytes());
+    ds[0x0326..0x032a].copy_from_slice(&close.to_le_bytes());
+    if other_side != 0 {
+        scene.widgets[at][0x27] = 0x14;
+        ev.push(CombatEvent::Music { name: 0x6168, number: 10 });
+    } else {
+        scene.widgets[at][0x27] = 0;
+        ev.push(CombatEvent::Music { name: 0x616f, number: 0x0b });
+    }
+    let reward = |ev: &mut Vec<CombatEvent>, stat: u16, id: u8, delta: u16| {
+        ev.push(CombatEvent::Ui(0x0623));
+        ev.push(CombatEvent::StatChange { stat, id, delta });
+        ev.push(CombatEvent::Ui(0x1876));
+        ev.push(CombatEvent::Ui(0x072b));
+    };
+    for side in [0u8, 0x14] {
+        let count = if side == 0 { ds[0x9dac] } else { ds[0x9dad] };
+        for c in 0..count {
+            let s = usize::from(side) + usize::from(c);
+            let uid = ds[0x9dc3 + s];
+            let r = rec(uid);
+            match ds[SLOTS + s] {
+                st @ (0 | 1 | 2 | 0x40) => {
+                    if matches!(st, 1 | 2) {
+                        if let Some(w) = scene.find(0x200, 0, u16::from(uid)) {
+                            scene.widgets[w][0x27] = if side == 0 { 0x14 } else { 0 };
+                        }
+                    }
+                    if word(ds, r + 0x16) & 0x8200 == 0x200 {
+                        ds[0x9cac] = 0;
+                    }
+                }
+                4 => {
+                    fun_20b5_1229(ds, uid, &mut ev);
+                }
+                8 => {
+                    if word(ds, r + 0x16) & 0x200 == 0 {
+                        reward(&mut ev, 0x2f, uid, 1);
+                    }
+                }
+                0x10 | 0x20 => {
+                    let other = ds[0x9dc3 + usize::from(0x14 - side)];
+                    let d = fun_26c5_041b(ds, uid, other, 0);
+                    if d < 0x32 && side == other_side {
+                        let f = word(ds, r + 0x16) & 0x8fff;
+                        set_word(ds, r + 0x16, f);
+                        if ds[r + 0x31] == 0 {
+                            if word(ds, r + 0x16) & 0x400 != 0 {
+                                let x = word(ds, r + 0x0e);
+                                set_word(ds, r + 0x12, x);
+                                set_word(ds, r + 0x14, 0);
+                            } else if world.location_of(ds, uid) == 6 && word(ds, r + 0x16) & 0x200 != 0 {
+                                let extra = if uid <= 0x10 { 0x6000 } else { 0x1000 };
+                                let f = (word(ds, r + 0x16) & 0x8fff) | extra;
+                                set_word(ds, r + 0x16, f);
+                                set_word(ds, r + 0x12, 0);
+                                set_word(ds, r + 0x14, 0);
+                                ev.push(CombatEvent::MapEvent {
+                                    call: 0x071c,
+                                    args: [u16::from(d) << 8 | u16::from(uid), u16::from(other), 0],
+                                });
+                            } else {
+                                let dx = world.random(100).wrapping_sub(0x32) as i16;
+                                let x = word(ds, r + 0x0e).wrapping_add(dx as u16);
+                                set_word(ds, r + 0x12, x);
+                                let dy = if world.random(2) != 0 {
+                                    0x32 - dx.wrapping_abs()
+                                } else {
+                                    dx.wrapping_abs() - 0x32
+                                };
+                                let y = (dy as u16).wrapping_add(word(ds, r + 0x10));
+                                set_word(ds, r + 0x14, y);
+                                ev.push(CombatEvent::MapEvent {
+                                    call: 0x06b5,
+                                    args: [u16::from(d) << 8 | u16::from(uid), u16::from(other), 0x14],
+                                });
+                            }
+                        }
+                        if ds[r + 0x26] == 0 {
+                            reward(&mut ev, 0x2f, uid, 0xfffe);
+                        }
+                    } else {
+                        if let Some(w) = scene.find(0x200, 0, u16::from(uid)) {
+                            set(&mut scene.widgets[w], 0x15, Some(u16::from(other)));
+                        }
+                        if side == other_side && ds[0x032d] == 0 {
+                            reward(&mut ev, 0x2f, other, 1);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    ds[0x01ee] = 1;
+    (0, ev)
+}
+
+/// A scene host that also owns DGROUP, for [`fun_20b5_1057`].
+pub trait DropHost: crate::script::ScriptHost {
+    fn dgroup(&mut self) -> &mut [u8];
+}
+
+/// `FUN_20b5_1057(id)`: a dead unit drops what it carries. Only when drops
+/// are on (`DS:9DF6`), the unit's hit points (`+0x2C`) are 0 and it still
+/// has a widget. Each item (`DS:4DD1`, 4 bytes: item, owner, -, state)
+/// owned by it with state bits `0x18` and no `0xF000` item flags
+/// (`DS:488B + 0x1B*item`, `+0x18`) drops with a 40% chance: it leaves the
+/// inventory (`FUN_1ba8_01ff`, returned as [`CombatEvent::ItemDropped`])
+/// and lies on the field as a static image (resource `+0x12`) at the
+/// unit's x plus `rand(20)`, standing on the ground line (`+0x15` plus
+/// `DS:79F7[DS:9DAB]`; 10 higher for resources 0x328, 0x333 and 0x338).
+pub fn fun_20b5_1057(scene: &mut crate::script::ScriptScene, id: u8, host: &mut dyn DropHost) -> Vec<CombatEvent> {
+    let mut ev = Vec::new();
+    {
+        let ds = host.dgroup();
+        if ds[0x9df6] == 0 || ds[rec(id) + 0x2c] != 0 {
+            return ev;
+        }
+    }
+    let Some(w) = scene.find(0x200, 0, u16::from(id)) else {
+        return ev;
+    };
+    let x = ww(&scene.widgets[w], 0x12);
+    for i in 0..0x55usize {
+        let (item, owner, state) = {
+            let ds = host.dgroup();
+            (ds[0x4dd1 + i * 4], ds[0x4dd1 + i * 4 + 1], ds[0x4dd1 + i * 4 + 3])
+        };
+        let def = 0x488b + usize::from(item) * 0x1b;
+        if state & 0x18 != 0x18 || owner != id || word(host.dgroup(), def + 0x18) & 0xf000 != 0 {
+            continue;
+        }
+        if host.random(100) >= 0x28 {
+            continue;
+        }
+        ev.push(CombatEvent::ItemDropped { item, owner: id });
+        let res = word(host.dgroup(), def + 0x12);
+        // FUN_14b0_0122 / FUN_14b0_02c4: the image height, then release it.
+        let (_, _, height) = host.static_image(res);
+        let ground = {
+            let ds = host.dgroup();
+            ds[def + 0x15].wrapping_add(ds[0x79f7 + usize::from(ds[0x9dab])])
+        };
+        let depth = if matches!(res, 0x328 | 0x333 | 0x338) { ground.wrapping_sub(10) } else { ground };
+        let y = u16::from(ground).wrapping_sub(height);
+        let dx = host.random(0x14);
+        let args = crate::script::SpawnArgs {
+            flags: 0x20,
+            res,
+            id: res,
+            script: res as u8,
+            depth,
+            x: dx.wrapping_add(x),
+            y,
+            ..Default::default()
+        };
+        let at = scene.fun_15b8_0461(&args, host);
+        let f = ww(&scene.widgets[at], 0) | 2;
+        scene.widgets[at][0..2].copy_from_slice(&f.to_le_bytes());
+    }
+    ev
 }
 
 /// Opcode 7 of `FUN_20b5_1dff` (`20b5:2769`): the battle starts. Once per
@@ -155,6 +483,9 @@ fn fun_20b5_2769(scene: &mut crate::script::ScriptScene, ds: &mut [u8]) -> (u8, 
 /// [`fun_20b5_1dff`] for the scene's current widget against the widget
 /// `FUN_15b8_16ca(0x200, 0, actor[+0x2E])` finds. A widget targeting itself
 /// is run without a target (the original would alias the two; not seen).
+/// When the step decides the actor leaves the fight (a kill, a concession),
+/// [`fun_20b5_1705`] follows. Opcode 5 still asks `world.rout_check()` for
+/// the target.
 pub fn script_hook(
     scene: &mut crate::script::ScriptScene,
     op: u16,
@@ -168,7 +499,7 @@ pub fn script_hook(
     }
     let tid = ww(&scene.widgets[cur], 0x2e);
     let target = scene.find(0x200, 0, tid).filter(|&t| t != cur);
-    match target {
+    let (ret, events) = match target {
         Some(t) if t < cur => {
             let (lo, hi) = scene.widgets.split_at_mut(cur);
             fun_20b5_1dff(ds, &mut hi[0], Some(&mut lo[t]), op, stale_bp10, world)
@@ -178,7 +509,23 @@ pub fn script_hook(
             fun_20b5_1dff(ds, &mut lo[cur], Some(&mut hi[0]), op, stale_bp10, world)
         }
         None => fun_20b5_1dff(ds, &mut scene.widgets[cur], None, op, stale_bp10, world),
+    };
+    // FUN_20b5_1705(actor, flag) runs inside the step; nothing the step does
+    // after it depends on what it changes, so it runs here, in event order.
+    // With flag 0 it reads an uninitialised [BP-1] (the side the battle is
+    // decided for); the actor's opposite side is used.
+    let mut out = Vec::with_capacity(events.len());
+    for e in events {
+        let rout = matches!(e, CombatEvent::Rout { actor: true, .. });
+        let flag = if let CombatEvent::Rout { flag, .. } = e { flag as u8 } else { 0 };
+        out.push(e);
+        if rout {
+            let stale = if ww(&scene.widgets[cur], 0x34) < 0x14 { 0x14 } else { 0 };
+            let (_, more) = fun_20b5_1705(scene, cur, flag, stale, ds, world);
+            out.extend(more);
+        }
     }
+    (ret, out)
 }
 
 fn rec(id: u8) -> usize {
@@ -418,7 +765,7 @@ fn attack_step(
             ds[slot_at(tslot)] = 8;
             let tw_id = ww(t, 0x0a) as u8;
             if flags(ds, tw_id) & 0x200 == 0 && flags(ds, aid) & 0x200 != 0 {
-                ev.push(CombatEvent::StatChange { stat: 0x2f, id: aid });
+                ev.push(CombatEvent::StatChange { stat: 0x2f, id: aid, delta: 1 });
             }
             let judge = stale_bp10 as u8;
             if ds[rec(judge) + 0x2f] >= 10 {
@@ -434,7 +781,7 @@ fn attack_step(
                 }
             }
             ev.push(CombatEvent::Rout { actor: true, flag: 0 });
-            ev.push(CombatEvent::StatChange { stat: reward, id: aid });
+            ev.push(CombatEvent::StatChange { stat: reward, id: aid, delta: 1 });
             return finish(ev);
         }
         let index = if magic {
@@ -459,7 +806,7 @@ fn attack_step(
     ds[slot_at(tslot)] = 4;
     ev.push(CombatEvent::Rout { actor: true, flag: word(ds, 0x9c56) & 1 });
     if ds[0x032d] == 0 && flags(ds, aid) & 0x200 != 0 {
-        ev.push(CombatEvent::StatChange { stat: reward, id: aid });
+        ev.push(CombatEvent::StatChange { stat: reward, id: aid, delta: 1 });
     }
     ev.push(CombatEvent::DeadUnit(tid));
     finish(ev)
@@ -516,7 +863,7 @@ mod tests {
                 CombatEvent::UnitHit { id, slot } => Some(format!("remove_unit {id} {slot}")),
                 CombatEvent::Rout { flag, .. } => Some(format!("rout {flag}")),
                 CombatEvent::DeadUnit(id) => Some(format!("dead_unit {id}")),
-                CombatEvent::StatChange { stat, id } => Some(format!("stat_change {stat} {id} 1")),
+                CombatEvent::StatChange { stat, id, delta } => Some(format!("stat_change {stat} {id} {delta}")),
                 CombatEvent::Disposition { a, b, delta } => {
                     Some(format!("disposition {a} {b} {}", *delta as u16))
                 }
@@ -600,5 +947,109 @@ mod tests {
             by_op[usize::from(op >> 8).min(8)] += 1;
         }
         eprintln!("combat steps matched by opcode: {by_op:?}");
+    }
+
+    /// Replays FUN_20b5_1705 calls (with FUN_20b5_1229 inside) recorded in
+    /// the original by `tests/oracle/rout_vectors.py`.
+    #[test]
+    fn matches_original_rout_calls() {
+        let Ok(text) = std::fs::read_to_string("../../tests/vectors/rout_calls.json") else {
+            eprintln!("SKIP: tests/vectors/rout_calls.json absent");
+            return;
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut done = 0;
+        for (n, call) in v["calls"].as_array().unwrap().iter().enumerate() {
+            let state = |k: &str| -> (Vec<u8>, Vec<Widget>, i16) {
+                let st = &call[k];
+                let widgets = st["widgets"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|w| hex(w.as_str().unwrap()).try_into().unwrap())
+                    .collect();
+                (hex(st["ds"].as_str().unwrap()), widgets, st["current"].as_u64().unwrap() as i16)
+            };
+            let (mut ds, widgets, current) = state("before");
+            let (want_ds, want_widgets, _) = state("after");
+            let mut scene = crate::script::ScriptScene { widgets, current, ..Default::default() };
+            let mut world = Replay {
+                rng: call["rng"].as_array().unwrap().iter().map(|r| r.as_u64().unwrap() as u16).collect(),
+                rout: Vec::new(),
+            };
+            let at = call["widget"].as_u64().unwrap() as usize;
+            let flag = call["flag"].as_u64().unwrap() as u8;
+            let stale = call["stale_bp1"].as_u64().unwrap() as u8;
+            let (ret, ev) = fun_20b5_1705(&mut scene, at, flag, stale, &mut ds, &mut world);
+            let ctx = format!("call {n}");
+            assert_eq!(u64::from(ret), call["ret"].as_u64().unwrap(), "{ctx}: return");
+            assert!(world.rng.is_empty(), "{ctx}: unused random numbers");
+            for (i, (a, b)) in scene.widgets.iter().zip(&want_widgets).enumerate() {
+                assert_eq!(a.as_slice(), b.as_slice(), "{ctx}: widget {i}");
+            }
+            // Compare what 1705/1229 write. Calls they hand off (music, the
+            // story event FUN_26c5_000b, UI) and the clock interrupt change
+            // other bytes during the call.
+            let units: Vec<u8> = (0..usize::from(ds[0x9dac]))
+                .map(|i| ds[0x9dc3 + i])
+                .chain((0..usize::from(ds[0x9dad])).map(|i| ds[0x9dd7 + i]))
+                .collect();
+            let mut owned: Vec<usize> = Vec::new();
+            for g in [0x9cac, 0x9cad, 0x9c58, 0x9c59, 0x01ee] {
+                owned.push(g);
+            }
+            owned.extend(0x0322..0x032a);
+            owned.extend(SLOTS..SLOTS + 0x28);
+            // Characters: the units, their followers and anyone targeting
+            // them (the story event may change others).
+            let involved = |id: u8| {
+                let r = rec(id);
+                units.contains(&id) || units.contains(&ds[r + 0x31]) || units.contains(&ds[r + 0x18])
+            };
+            for id in (1..0x5du8).filter(|&id| involved(id)) {
+                let r = rec(id);
+                for k in [0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x18, 0x1e, 0x1f, 0x31] {
+                    owned.push(r + k);
+                }
+                owned.extend(r + 0x32..r + 0x38);
+                if units.contains(&id) {
+                    owned.extend([r + 0x16, r + 0x17]);
+                }
+            }
+            for &i in &owned {
+                assert_eq!(ds[i], want_ds[i], "{ctx}: DS:{i:04X}");
+            }
+            let got: Vec<String> = ev
+                .iter()
+                .filter_map(|e| match e {
+                    CombatEvent::Music { name, number } => Some(format!("music {name} {} {number} 0", 0x2578)),
+                    CombatEvent::StatChange { stat, id, delta } => Some(format!("stat_change {stat} {id} {delta}")),
+                    CombatEvent::Ui(0x0623) => Some("ui_0623".into()),
+                    CombatEvent::Ui(0x072b) => Some("ui_072b".into()),
+                    CombatEvent::Ui(0x1876) => Some("ui_1876 2".into()),
+                    CombatEvent::StoryEvent { a, b } => Some(format!("story_event {a} {b}")),
+                    CombatEvent::MapEvent { call: 0x071c, args } => Some(format!("map_071c {} {}", args[0], args[1])),
+                    CombatEvent::MapEvent { call: _, args } => Some(format!("map_06b5 {} {} {}", args[0], args[1], args[2])),
+                    _ => None,
+                })
+                .collect();
+            let want: Vec<String> = call["subcalls"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| {
+                    let s = s.as_array().unwrap();
+                    let mut out = s[0].as_str().unwrap().to_string();
+                    for a in &s[1..] {
+                        out += &format!(" {}", a.as_u64().unwrap());
+                    }
+                    out
+                })
+                .collect();
+            assert_eq!(got, want, "{ctx}: outside calls");
+            done += 1;
+        }
+        eprintln!("rout calls matched: {done}");
+        assert!(done > 0);
     }
 }

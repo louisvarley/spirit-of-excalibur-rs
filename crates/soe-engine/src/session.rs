@@ -237,19 +237,31 @@ impl Session {
 
     /// The current scene with the duel's widgets drawn over it, back to
     /// front: each sprite is frame `frame` of its `ANI.RES` bank with its
-    /// top-left at the widget position, mirrored when the widget is.
+    /// top-left at the widget position, mirrored when the widget is, and
+    /// recoloured through its remap table.
     #[must_use]
     pub fn compose_duel(&self, duel: &crate::duel::Duel) -> soe_video::IndexedFrame {
         let mut frame = self.frame.clone();
         for sprite in duel.sprites() {
-            let Some(image) = duel
-                .bank(sprite.resource)
-                .and_then(|data| FrameBank::parse(data).ok())
-                .and_then(|bank| bank.frame_image(usize::from(sprite.frame & 0x7f)))
-            else {
+            let image = if sprite.still {
+                duel.still(sprite.resource).and_then(|data| decode_planar(data).ok())
+            } else {
+                duel.bank(sprite.resource)
+                    .and_then(|data| FrameBank::parse(data).ok())
+                    .and_then(|bank| bank.frame_image(usize::from(sprite.frame & 0x7f)))
+            };
+            let Some(image) = image else {
                 continue;
             };
-            crate::room::blit_transparent(&mut frame, &image, i32::from(sprite.x), i32::from(sprite.y), sprite.mirrored);
+            let remap = duel.remap_table(sprite.remap);
+            crate::room::blit_remapped(
+                &mut frame,
+                &image,
+                i32::from(sprite.x),
+                i32::from(sprite.y),
+                sprite.mirrored,
+                remap.as_ref(),
+            );
         }
         frame
     }
