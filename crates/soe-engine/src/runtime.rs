@@ -483,12 +483,22 @@ impl Runtime {
             .collect()
     }
 
-    /// Names shown by the active item panel.
+    /// Names shown by the active item panel. Duplicate instances were grouped
+    /// by the `1ba8` inventory list, so show their count and equipped state.
     #[must_use]
     pub fn item_names(&self) -> Vec<String> {
         self.item_entries()
             .into_iter()
-            .map(|entry| entry.name)
+            .map(|entry| {
+                let mut name = entry.name;
+                if entry.quantity > 1 {
+                    name.push_str(&format!(" x{}", entry.quantity));
+                }
+                if entry.equipped {
+                    name.push_str(" [equipped]");
+                }
+                name
+            })
             .collect()
     }
 
@@ -1342,8 +1352,9 @@ impl Runtime {
             self.notice = "No magic prepared.".to_string();
             return;
         };
-        match self.session.state.cast_spell(
+        match self.session.state.cast_spell_slot(
             self.selected_character,
+            entry.slot,
             entry.def,
             self.selected_character,
         ) {
@@ -1540,9 +1551,85 @@ fn list_saves(game_dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::save::{CHAR_SIZE, Character, ITEM_SIZE, Item};
 
     fn make_runtime() -> Runtime {
         Runtime::headless(vec![5, 6, 7], 0)
+    }
+
+    /// Headless runtime with two named characters and the item/spell
+    /// definitions used by the interactive screen tests.
+    fn economy_runtime() -> Runtime {
+        let mut runtime = Runtime::headless(vec![5], 0);
+        runtime.session.scene_id = 5;
+        let state = &mut runtime.session.state;
+        let mut hero = Character {
+            raw: [0; CHAR_SIZE],
+        };
+        hero.set_name("Hero");
+        hero.set_stat(Character::HEALTH, 10);
+        hero.set_stat(Character::HITS, 12);
+        hero.set_stat(Character::COMBAT, 7);
+        hero.set_stat(Character::ARMOR, 5);
+        hero.set_stat(Character::MAGIC, 9);
+        hero.set_gold(100);
+        state.characters[0] = hero;
+        let mut friend = Character {
+            raw: [0; CHAR_SIZE],
+        };
+        friend.set_name("Friend");
+        friend.set_stat(Character::HEALTH, 20);
+        state.characters[1] = friend;
+
+        state.items[0] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[0].set_name("gold besant");
+        state.items[0].raw[Item::KIND] = 49;
+        state.items[1] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[1].set_name("healing balm");
+        state.items[1].raw[Item::KIND] = 33;
+        state.items[1].raw[Item::POWER] = 1;
+        state.items[1].raw[Item::EFFECT] = 3;
+        state.items[1].raw[Item::EFFECT_ID] = 44;
+        state.items[2] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[2].set_name("sword");
+        state.items[2].raw[Item::KIND] = 56;
+        state.items[2].raw[Item::POWER] = 5;
+        state.items[2].raw[Item::EFFECT] = 5;
+        state.items[2].raw[Item::EFFECT_ID] = 45;
+        state.items[3] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[3].set_name("helm");
+        state.items[3].raw[Item::KIND] = 59;
+        state.items[3].raw[Item::EFFECT] = 4;
+        state.items[3].raw[Item::EFFECT_ID] = 46;
+        state.items[4] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[4].set_name("Heal");
+        state.items[4].raw[Item::EFFECT] = 10;
+        state.items[4].raw[Item::EFFECT_ID] = 44;
+        state.items[5] = Item {
+            raw: [0; ITEM_SIZE],
+        };
+        state.items[5].set_name("Shield");
+        state.items[5].raw[Item::EFFECT] = 10;
+        state.items[5].raw[Item::EFFECT_ID] = 46;
+        runtime
+    }
+
+    fn select_def(runtime: &mut Runtime, def: usize) {
+        runtime.item_index = runtime
+            .item_entries()
+            .iter()
+            .position(|entry| entry.def == def)
+            .expect("entry in active list");
     }
 
     #[test]
@@ -1705,5 +1792,162 @@ mod tests {
         let events = runtime.handle_key(Key::Confirm);
         assert_eq!(events, vec![RuntimeEvent::Quit]);
         assert_eq!(runtime.screen(), Screen::Quit);
+    }
+
+    #[test]
+    fn status_item_panel_uses_and_equips_objects() {
+        let mut runtime = economy_runtime();
+        runtime.session.state.add_item(0, 2, 1).unwrap();
+        runtime.session.state.add_item(0, 3, 1).unwrap();
+
+        runtime.handle_key(Key::Status);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Item);
+        assert_eq!(runtime.item_action(), 3);
+
+        let before = runtime.session().state.to_bytes();
+        select_def(&mut runtime, 2);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.characters[0].health(), 14);
+        assert!(
+            runtime
+                .session()
+                .state
+                .inventory(0)
+                .iter()
+                .all(|entry| entry.def != 2),
+            "balm was consumed"
+        );
+        assert_ne!(runtime.session().state.to_bytes(), before);
+
+        let before = runtime.session().state.to_bytes();
+        select_def(&mut runtime, 3);
+        runtime.handle_key(Key::Confirm);
+        assert!(
+            runtime
+                .session()
+                .state
+                .inventory(0)
+                .iter()
+                .any(|entry| entry.def == 3 && entry.equipped),
+            "sword is equipped"
+        );
+        assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+
+    #[test]
+    fn item_panel_drops_and_picks_up_a_carried_object() {
+        let mut runtime = economy_runtime();
+        runtime.session.state.add_item(0, 2, 1).unwrap();
+
+        runtime.open_item(1);
+        let before = runtime.session().state.to_bytes();
+        runtime.handle_key(Key::Confirm);
+        assert!(runtime.session().state.inventory(0).is_empty());
+        assert_eq!(runtime.session().state.ground_items(5).len(), 1);
+        assert_ne!(runtime.session().state.to_bytes(), before);
+
+        runtime.open_item(0);
+        assert_eq!(runtime.item_entries().len(), 1);
+        let before = runtime.session().state.to_bytes();
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.inventory(0).len(), 1);
+        assert!(runtime.session().state.ground_items(5).is_empty());
+        assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+
+    #[test]
+    fn give_target_panel_moves_an_object_to_the_target() {
+        let mut runtime = economy_runtime();
+        runtime.session.state.add_item(0, 2, 1).unwrap();
+
+        runtime.open_target(9);
+        assert_eq!(runtime.target_character(), 1);
+        runtime.open_item(9);
+        let before = runtime.session().state.to_bytes();
+        runtime.handle_key(Key::Confirm);
+
+        assert!(runtime.session().state.inventory(0).is_empty());
+        assert_eq!(runtime.session().state.inventory(1).len(), 1);
+        assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+
+    #[test]
+    fn shop_panel_buys_and_sells_for_gold() {
+        let mut runtime = economy_runtime();
+        runtime.session.state.add_item(1, 3, 1).unwrap();
+
+        runtime.open_shop(Some(1));
+        assert_eq!(runtime.screen(), Screen::Shop);
+        let before = runtime.session().state.to_bytes();
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.gold(0), 95);
+        assert!(
+            runtime
+                .session()
+                .state
+                .inventory(0)
+                .iter()
+                .any(|entry| entry.def == 3)
+        );
+        assert!(runtime.session().state.inventory(1).is_empty());
+        assert_ne!(runtime.session().state.to_bytes(), before);
+
+        runtime.handle_key(Key::Space);
+        assert!(runtime.shop_sell());
+        let before = runtime.session().state.to_bytes();
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.gold(0), 97);
+        assert!(
+            runtime
+                .session()
+                .state
+                .inventory(0)
+                .iter()
+                .all(|entry| entry.def != 3)
+        );
+        assert_eq!(runtime.session().state.inventory(1).len(), 1);
+        assert_ne!(runtime.session().state.to_bytes(), before);
+    }
+
+    #[test]
+    fn spell_panel_casts_and_consumes_the_selected_spell() {
+        let mut runtime = economy_runtime();
+        runtime.session.state.add_item(0, 5, 1).unwrap();
+        runtime.session.state.add_item(0, 6, 1).unwrap();
+
+        runtime.open_spell();
+        assert_eq!(runtime.screen(), Screen::Spell);
+        assert_eq!(runtime.spell_entries().len(), 2);
+
+        let before = runtime.session().state.to_bytes();
+        runtime.item_index = runtime
+            .spell_entries()
+            .iter()
+            .position(|entry| entry.def == 5)
+            .expect("Heal");
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.characters[0].health(), 20);
+        assert!(
+            runtime
+                .session()
+                .state
+                .spells(0)
+                .iter()
+                .all(|entry| entry.def != 5),
+            "Heal was consumed"
+        );
+        assert_ne!(runtime.session().state.to_bytes(), before);
+
+        let before = runtime.session().state.to_bytes();
+        runtime.item_index = runtime
+            .spell_entries()
+            .iter()
+            .position(|entry| entry.def == 6)
+            .expect("Shield");
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.session().state.characters[0].armor(), 15);
+        assert!(runtime.session().state.spells(0).is_empty());
+        assert_ne!(runtime.session().state.to_bytes(), before);
     }
 }

@@ -111,10 +111,24 @@ Verified flag values:
 `FUN_1ba8_04fd` counts carried instances (`flags == 0x18`), `FUN_1ba8_078f`
 lists a character's inventory, and `FUN_1ba8_0431` transfers an item by
 rewriting `+0x01` (or moves the gold word between characters when the object
-is definition 1). `FUN_1ba8_01ff` finds/creates the money instance and
-`FUN_1ba8_1005` implements trade using these lists and definition `+0x16` as
-the price. `FUN_1ba8_44f1` -> `FUN_2b79_0a7f` selects a prepared spell;
-`FUN_1ba8_2e27` consumes the selected spell and applies its effect.
+is definition 1). `FUN_1ba8_078f` counts by definition, so duplicate instances
+become one row with a count; it selects flags exactly `0x18`, so equipped
+(`0x19`) objects are normally absent from the use/drop/trade list. The port
+keeps equipped rows visible in the status screen and groups them separately.
+
+`FUN_1ba8_01ff` finds/creates the money instance and `FUN_1ba8_1005`
+implements trade using these lists and definition `+0x16` as the price. Trade
+transfers the exact instance through `FUN_1ba8_0431` rather than deleting and
+recreating it. `FUN_1ba8_44f1` -> `FUN_2b79_0a7f` selects a prepared spell and
+passes the packed `(instance << 8) | definition` to `FUN_1ba8_2e27`, which
+consumes that instance and applies its effect.
+
+`FUN_1ba8_2e27` -> `FUN_1ba8_3032` switches on definition `+0x17`.
+`FUN_1ba8_27d0` applies the change to a character byte whose label comes from
+the DS `0x4FD8` table: `36` magic defense, `37` magical skill, `42` magical
+power, `43` strength, `44` life energy, `45` combat ability, `46` agility, `47`
+noble bearing and `48` faith. Effects `1` (map), `6` (Summon Undine), `10`
+(Disenchant), `64` (charm) and `66` (keys) have their own handlers.
 
 ## Events / relationships
 

@@ -194,6 +194,12 @@ impl GameState {
 
     /// Carried objects for one 0-based character index. Money is exposed via
     /// [`GameState::gold`] instead of a row.
+    ///
+    /// This mirrors `FUN_1ba8_078f`: the original counts carried instances by
+    /// definition and prints one row (`"3 healing balms"`), so duplicate
+    /// instances are combined into one [`InventoryEntry`] with `quantity`.
+    /// Equipped and unequipped copies stay separate so the status screen can
+    /// still distinguish them.
     #[must_use]
     pub fn inventory(&self, character: usize) -> Vec<InventoryEntry> {
         let owner = character.saturating_add(1);
@@ -201,17 +207,28 @@ impl GameState {
             return Vec::new();
         }
         let owner = owner as u8;
-        self.instances
-            .iter()
-            .enumerate()
-            .filter(|(_, instance)| {
-                instance.item() != 0
-                    && instance.item() != GOLD_DEF as u8
-                    && instance.owner() == owner
-                    && instance.is_carried()
-            })
-            .filter_map(|(slot, instance)| self.entry(slot, instance))
-            .collect()
+        let mut rows: Vec<InventoryEntry> = Vec::new();
+        for (slot, instance) in self.instances.iter().enumerate() {
+            if instance.item() == 0
+                || instance.item() == GOLD_DEF as u8
+                || instance.owner() != owner
+                || !instance.is_carried()
+            {
+                continue;
+            }
+            let Some(entry) = self.entry(slot, instance) else {
+                continue;
+            };
+            if let Some(existing) = rows
+                .iter_mut()
+                .find(|row| row.def == entry.def && row.equipped == entry.equipped)
+            {
+                existing.quantity = existing.quantity.saturating_add(entry.quantity);
+            } else {
+                rows.push(entry);
+            }
+        }
+        rows
     }
 
     /// Prepared spells carried by a character.
@@ -569,11 +586,14 @@ impl GameState {
         })
     }
 
-    /// Cast a prepared spell. The selected spell instance is consumed even if
-    /// the target is already at full health.
-    pub fn cast_spell(
+    /// Cast the selected prepared-spell instance. Consuming the exact instance
+    /// matters when a character carries two copies of the same spell
+    /// (`FUN_1ba8_44f1` passes the packed slot/definition to
+    /// `FUN_1ba8_2e27`).
+    pub fn cast_spell_slot(
         &mut self,
         character: usize,
+        slot: usize,
         def: usize,
         target: usize,
     ) -> Result<ActionOutcome, EconomyError> {
@@ -581,7 +601,12 @@ impl GameState {
         if !item.is_spell() {
             return Err(EconomyError::NothingHappens);
         }
-        self.find_carried(character, def, None)
+        let owner = (character + 1) as u8;
+        self.instances
+            .get(slot)
+            .filter(|instance| {
+                instance.item() == def as u8 && instance.owner() == owner && instance.is_carried()
+            })
             .ok_or(EconomyError::NotOwned)?;
         let target = if target < self.characters.len() {
             target
@@ -595,7 +620,7 @@ impl GameState {
             item.power(),
             &item.name(),
         )?;
-        self.remove_item(character, def, 1)?;
+        self.instances[slot] = ObjectInstance { raw: [0; 4] };
         Ok(ActionOutcome {
             message,
             consumed: true,
@@ -603,14 +628,34 @@ impl GameState {
         })
     }
 
-    /// Buy one object. With a seller, stock is transferred from their
-    /// inventory; without one the catalogue is treated as unlimited stock.
+    /// Cast a prepared spell. The first carried copy is consumed even if the
+    /// target is already at full health.
+    pub fn cast_spell(
+        &mut self,
+        character: usize,
+        def: usize,
+        target: usize,
+    ) -> Result<ActionOutcome, EconomyError> {
+        let item = self.item_def_cloned(def)?;
+        if !item.is_spell() {
+            return Err(EconomyError::NothingHappens);
+        }
+        let slot = self
+            .find_carried(character, def, None)
+            .ok_or(EconomyError::NotOwned)?;
+        self.cast_spell_slot(character, slot, def, target)
+    }
+
+    /// Buy one object. With a seller, the stock instance itself is transferred
+    /// (`FUN_1ba8_1005` calls `FUN_1ba8_0431`, which rewrites the owner byte);
+    /// without one the catalogue is treated as unlimited stock.
     pub fn buy(
         &mut self,
         buyer: usize,
         seller: Option<usize>,
         def: usize,
     ) -> Result<u16, EconomyError> {
+        self.character_ref(buyer)?;
         let item = self.item_def_cloned(def)?;
         if item.is_gold() || item.is_spell() {
             return Err(EconomyError::NoStock);
@@ -623,36 +668,60 @@ impl GameState {
             });
         }
         if let Some(seller) = seller {
-            if self.find_carried(seller, def, None).is_none() {
+            self.character_ref(seller)?;
+            if seller == buyer {
                 return Err(EconomyError::NoStock);
             }
-            self.remove_item(seller, def, 1)?;
+            let slot = self
+                .find_carried(seller, def, None)
+                .ok_or(EconomyError::NoStock)?;
+            self.spend_gold(buyer, price)?;
+            let instance = &mut self.instances[slot];
+            instance.set_owner((buyer + 1) as u8);
+            instance.set_location(0);
+            instance.set_flags(INVENTORY_FLAG);
+        } else {
+            // Catalogue stock is unlimited, so make sure the carried copy has
+            // a free slot before taking the money.
+            if self.empty_slot().is_none() {
+                return Err(EconomyError::InventoryFull);
+            }
+            self.spend_gold(buyer, price)?;
+            self.add_item(buyer, def, 1)?;
         }
-        self.spend_gold(buyer, price)?;
-        self.add_item(buyer, def, 1)?;
         Ok(price)
     }
 
-    /// Sell one object for half its value. The buyer (when given) receives it.
+    /// Sell one object for half its value. When a buyer is supplied the sold
+    /// instance is transferred to them; it is not destroyed and recreated.
     pub fn sell(
         &mut self,
         seller: usize,
         buyer: Option<usize>,
         def: usize,
     ) -> Result<u16, EconomyError> {
+        self.character_ref(seller)?;
         let item = self.item_def_cloned(def)?;
         if item.is_gold() || item.is_spell() {
             return Err(EconomyError::NoStock);
         }
-        if self.find_carried(seller, def, None).is_none() {
-            return Err(EconomyError::NotOwned);
-        }
         let price = (item.price().max(1) / 2).max(1);
-        self.remove_item(seller, def, 1)?;
-        self.add_gold(seller, price)?;
         if let Some(buyer) = buyer {
-            self.add_item(buyer, def, 1)?;
+            self.character_ref(buyer)?;
+            if buyer == seller {
+                return Err(EconomyError::NoStock);
+            }
+            let slot = self
+                .find_carried(seller, def, None)
+                .ok_or(EconomyError::NotOwned)?;
+            let instance = &mut self.instances[slot];
+            instance.set_owner((buyer + 1) as u8);
+            instance.set_location(0);
+            instance.set_flags(INVENTORY_FLAG);
+        } else {
+            self.remove_item(seller, def, 1)?;
         }
+        self.add_gold(seller, price)?;
         Ok(price)
     }
 
@@ -918,6 +987,101 @@ mod tests {
         let err = state.cast_spell(0, 5, 0).unwrap_err();
         assert_eq!(err, EconomyError::NotOwned);
         assert_eq!(state.to_bytes(), before);
+    }
+
+    #[test]
+    fn inventory_groups_duplicate_instances_like_1ba8_078f() {
+        let mut state = state();
+        state.add_item(0, 2, 3).unwrap();
+        let rows = state.inventory(0);
+        assert_eq!(rows.len(), 1, "three instances become one row");
+        assert_eq!(rows[0].def, 2);
+        assert_eq!(rows[0].quantity, 3);
+
+        let before = state.to_bytes();
+        state.use_item(0, 2, 0).unwrap();
+        let rows = state.inventory(0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].quantity, 2, "using one leaves two");
+        assert_ne!(state.to_bytes(), before);
+    }
+
+    #[test]
+    fn buy_from_a_seller_transfers_the_stock_instance() {
+        let mut state = state();
+        add(&mut state, 1, 3);
+        let slot = state
+            .instances
+            .iter()
+            .position(|instance| instance.item() == 3)
+            .expect("merchant stock");
+        let before = state.instances[slot];
+        let gold = state.gold(0);
+        let price = state.buy(0, Some(1), 3).unwrap();
+        assert_eq!(state.gold(0), gold - price);
+        assert_eq!(state.instances[slot].item(), before.item());
+        assert_eq!(state.instances[slot].location(), before.location());
+        assert_eq!(state.instances[slot].flags(), before.flags());
+        assert_eq!(state.instances[slot].owner(), 1);
+        assert!(state.instances[slot].is_carried());
+        assert!(state.inventory(1).is_empty());
+    }
+
+    #[test]
+    fn selling_to_a_buyer_transfers_the_instance_and_pays_half() {
+        let mut state = state();
+        add(&mut state, 0, 3);
+        let slot = state
+            .instances
+            .iter()
+            .position(|instance| instance.item() == 3)
+            .expect("carried sword");
+        let gold = state.gold(0);
+        let earned = state.sell(0, Some(1), 3).unwrap();
+        assert_eq!(earned, 2);
+        assert_eq!(state.gold(0), gold + earned);
+        assert_eq!(state.instances[slot].owner(), 2);
+        assert!(state.instances[slot].is_carried());
+        assert_eq!(state.inventory(1).len(), 1);
+    }
+
+    #[test]
+    fn failed_catalogue_purchase_does_not_spend_gold() {
+        let mut state = state();
+        for instance in &mut state.instances {
+            *instance = carried_instance(2);
+        }
+        let before = state.to_bytes();
+        let err = state.buy(0, None, 3).unwrap_err();
+        assert_eq!(err, EconomyError::InventoryFull);
+        assert_eq!(state.gold(0), 100);
+        assert_eq!(state.to_bytes(), before);
+    }
+
+    fn carried_instance(def: u8) -> ObjectInstance {
+        ObjectInstance {
+            raw: [def, 1, 0, INVENTORY_FLAG],
+        }
+    }
+
+    #[test]
+    fn casting_consumes_the_selected_duplicate_spell_instance() {
+        let mut state = state();
+        add(&mut state, 0, 5);
+        add(&mut state, 0, 5);
+        let slots: Vec<usize> = state
+            .instances
+            .iter()
+            .enumerate()
+            .filter(|(_, instance)| instance.item() == 5)
+            .map(|(slot, _)| slot)
+            .collect();
+        assert_eq!(slots.len(), 2);
+        let (first, second) = (slots[0], slots[1]);
+        state.cast_spell_slot(0, second, 5, 0).unwrap();
+        assert_eq!(state.instances[second].item(), 0, "selected copy consumed");
+        assert_eq!(state.instances[first].item(), 5, "other copy remains");
+        assert_eq!(state.characters[0].health(), 20);
     }
 
     #[test]
