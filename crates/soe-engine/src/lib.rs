@@ -34,3 +34,5 @@ pub mod session;
 pub mod font;
 
 pub mod story;
+
+pub mod battle;

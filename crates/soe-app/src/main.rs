@@ -549,38 +549,32 @@ fn draw_story(
     page: usize,
 ) {
     if let Some(panel) = panel {
-        draw_panel(frame, panel, 0, 18, 320, 170);
+        draw_panel(frame, panel, 0, 0, 320, 96);
     } else {
-        fill_rect(frame, 0, 18, 320, 170, 0);
+        fill_rect(frame, 0, 0, 320, 96, 0);
     }
     let Some(font) = session.font() else {
         return;
     };
     let color = if panel.is_some() { 0 } else { 7 };
-    font.draw_text(
-        frame,
-        12,
-        24,
-        "CHRONICLE  H CLOSE  ARROWS PAGE",
-        Some(color),
-    );
+    font.draw_text(frame, 12, 8, "CHRONICLE  H CLOSE  ARROWS PAGE", Some(color));
     let Some(story) = story else {
-        font.draw_text(frame, 12, 42, "NO HINT DATA", Some(color));
+        font.draw_text(frame, 12, 24, "NO HINT DATA", Some(color));
         return;
     };
     if story.is_empty() {
-        font.draw_text(frame, 12, 42, "NO HINT DATA", Some(color));
+        font.draw_text(frame, 12, 24, "NO HINT DATA", Some(color));
         return;
     }
     let index = page % story.paragraphs.len();
     let lines = wrap_text(font, &story.paragraphs[index], 292);
-    for (line, text) in lines.iter().take(12).enumerate() {
-        font.draw_text(frame, 12, 42 + line as i32 * 10, text, Some(color));
+    for (line, text) in lines.iter().take(7).enumerate() {
+        font.draw_text(frame, 12, 22 + line as i32 * 10, text, Some(color));
     }
     font.draw_text(
         frame,
         270,
-        174,
+        83,
         &format!("{}/{}", index + 1, story.paragraphs.len()),
         Some(color),
     );
