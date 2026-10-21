@@ -3,8 +3,8 @@
 //! Live army records are 0x38 bytes:
 //! - `0x0A..0x15`: NUL-padded name
 //! - `0x00..0x02`: three combat/armour fields (exact names still open)
-//! - `0x26`: current strength
-//! - `0x28`: maximum/starting strength
+//! - `0x26`: maximum/starting strength
+//! - `0x28`: current strength
 //! - `0x2A`: primary battle sprite image id
 //! - `0x2C`: secondary image id
 //!
@@ -52,8 +52,8 @@ impl BattleUnit {
                 attack: record[1],
                 defence: record[2],
             },
-            strength: u16::from_le_bytes([record[0x26], record[0x27]]),
-            max_strength: u16::from_le_bytes([record[0x28], record[0x29]]),
+            max_strength: u16::from_le_bytes([record[0x26], record[0x27]]),
+            strength: u16::from_le_bytes([record[0x28], record[0x29]]),
             image: u16::from_le_bytes([record[0x2a], record[0x2b]]),
             icon: u16::from_le_bytes([record[0x2c], record[0x2d]]),
         })

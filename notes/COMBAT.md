@@ -21,8 +21,8 @@ Battle units are 0x38-byte records. Verified from the capture:
 | `0x01` | combat field B |
 | `0x02` | combat field C |
 | `0x0A..0x15` | NUL-padded name |
-| `0x26` | current strength |
-| `0x28` | maximum/starting strength |
+| `0x26` | maximum/starting strength |
+| `0x28` | current strength |
 | `0x2A` | primary battle image id |
 | `0x2C` | secondary image id |
 

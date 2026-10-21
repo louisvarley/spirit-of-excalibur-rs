@@ -60,6 +60,9 @@ struct App {
     item_mode: bool,
     item_index: usize,
     item_action: usize,
+    target_mode: bool,
+    target_index: usize,
+    target_action: usize,
     audio: Option<audio::AudioPlayer>,
 }
 
@@ -109,6 +112,9 @@ impl App {
             item_mode: false,
             item_index: 0,
             item_action: 0,
+            target_mode: false,
+            target_index: 0,
+            target_action: 0,
             audio: None,
         }
     }
@@ -185,7 +191,9 @@ impl App {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.item_mode {
+        let mode = if self.target_mode {
+            "SELECT TARGET".to_string()
+        } else if self.item_mode {
             "ITEMS".to_string()
         } else if self.action_mode {
             "ACTIONS".to_string()
@@ -303,6 +311,16 @@ impl App {
             );
             display = Some(copy);
         }
+        if self.target_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_targets(
+                &mut copy,
+                &self.session,
+                self.panel.as_ref(),
+                self.target_index,
+            );
+            display = Some(copy);
+        }
 
         let Some(surface) = &mut self.surface else {
             return;
@@ -416,6 +434,44 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                if self.target_mode {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
+                            self.target_mode = false;
+                            self.update_title();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.target_index = self.target_index.saturating_sub(1);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            let count = self
+                                .session
+                                .state
+                                .characters
+                                .iter()
+                                .skip(1)
+                                .filter(|character| !character.name().is_empty())
+                                .count();
+                            if count > 0 {
+                                self.target_index = (self.target_index + 1).min(count - 1);
+                            }
+                        }
+                        PhysicalKey::Code(KeyCode::Enter) => {
+                            self.target_mode = false;
+                            if self.target_action == 2 {
+                                self.story_mode = true;
+                                self.story_page = 0;
+                            } else if self.target_action == 9 {
+                                self.item_mode = true;
+                                self.item_index = 0;
+                                self.item_action = 9;
+                            }
+                            self.update_title();
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
                 if self.item_mode {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::Escape) | PhysicalKey::Code(KeyCode::KeyA) => {
@@ -464,11 +520,12 @@ impl ApplicationHandler for App {
                             self.action_index = (self.action_index + 4).min(11);
                         }
                         PhysicalKey::Code(KeyCode::Enter) => {
-                            if self.action_index == 2 {
+                            if matches!(self.action_index, 2 | 9) {
                                 self.action_mode = false;
-                                self.story_mode = true;
-                                self.story_page = 0;
-                            } else if matches!(self.action_index, 0 | 1 | 3 | 9) {
+                                self.target_mode = true;
+                                self.target_index = 0;
+                                self.target_action = self.action_index;
+                            } else if matches!(self.action_index, 0 | 1 | 3) {
                                 self.action_mode = false;
                                 self.item_mode = true;
                                 self.item_index = 0;
@@ -747,6 +804,50 @@ fn draw_actions(
             y + 3,
             action,
             Some(if index == selected { 8 } else { 0 }),
+        );
+    }
+}
+
+fn draw_targets(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    selected: usize,
+) {
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 0, 0, 320, 96);
+    } else {
+        fill_rect(frame, 0, 0, 320, 96, 0);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 10, 6, "PLEASE SELECT:", Some(0));
+    let targets: Vec<_> = session
+        .state
+        .characters
+        .iter()
+        .skip(1)
+        .filter(|character| !character.name().is_empty())
+        .collect();
+    if targets.is_empty() {
+        font.draw_text(frame, 12, 26, "NO TARGETS", Some(0));
+        return;
+    }
+    let selected = selected.min(targets.len() - 1);
+    let page = selected / 8;
+    for row in 0..8 {
+        let index = page * 8 + row;
+        let Some(target) = targets.get(index) else {
+            break;
+        };
+        let marker = if index == selected { "*" } else { " " };
+        font.draw_text(
+            frame,
+            12,
+            24 + row as i32 * 8,
+            &format!("{marker}{}", target.name().to_ascii_uppercase()),
+            Some(0),
         );
     }
 }
@@ -1203,6 +1304,7 @@ fn main() -> Result<()> {
     app.action_mode = args.iter().any(|arg| arg == "--actions");
     app.item_mode = args.iter().any(|arg| arg == "--items");
     app.item_action = 9;
+    app.target_mode = args.iter().any(|arg| arg == "--targets");
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }
