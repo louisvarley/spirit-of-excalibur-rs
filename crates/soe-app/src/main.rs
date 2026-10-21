@@ -31,6 +31,8 @@ struct App {
     context: Option<softbuffer::Context<Arc<Window>>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     session: Session,
+    game_dir: PathBuf,
+    exe: PathBuf,
     scene_ids: Vec<u16>,
     scene_index: usize,
     animation_accum: Duration,
@@ -51,6 +53,8 @@ struct App {
 impl App {
     fn new(
         session: Session,
+        game_dir: PathBuf,
+        exe: PathBuf,
         scene_ids: Vec<u16>,
         scene_index: usize,
         map: Option<IndexedFrame>,
@@ -65,6 +69,8 @@ impl App {
             context: None,
             surface: None,
             session,
+            game_dir,
+            exe,
             scene_ids,
             scene_index,
             animation_accum: Duration::ZERO,
@@ -146,7 +152,7 @@ impl App {
             )
         };
         window.set_title(&format!(
-            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  H chronicle  P pause  Esc quit"
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  H chronicle  P pause  F5 save  F9 load  Esc quit"
         ));
     }
 
@@ -383,6 +389,25 @@ impl ApplicationHandler for App {
                     PhysicalKey::Code(KeyCode::KeyT) => {
                         self.travel_mode = true;
                         self.update_title();
+                    }
+                    PhysicalKey::Code(KeyCode::F5) => {
+                        if let Err(error) = self.session.save_to(&self.game_dir, "QUICK.SAV") {
+                            eprintln!("quick save: {error}");
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::F9) => {
+                        match Session::load_save(
+                            &self.game_dir,
+                            &self.exe,
+                            self.session.scene_id,
+                            "QUICK.SAV",
+                        ) {
+                            Ok(session) => {
+                                self.session = session;
+                                self.update_title();
+                            }
+                            Err(error) => eprintln!("quick load: {error}"),
+                        }
                     }
                     _ => {}
                 }
@@ -802,6 +827,8 @@ fn main() -> Result<()> {
     let paused = args.iter().any(|arg| arg == "--paused");
     let mut app = App::new(
         session,
+        game_dir.clone(),
+        exe.clone(),
         scene_ids,
         start,
         map,

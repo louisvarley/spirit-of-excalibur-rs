@@ -37,6 +37,8 @@ The process needs the original game files; they remain git-ignored.
 | H | open the story/hint chronicle (arrows/click page, H closes) |
 | T | travel list (up/down select, Enter go, T closes) |
 | P | pause / close the pause panel |
+| F5 | quick-save to `QUICK.SAV` |
+| F9 | quick-load from `QUICK.SAV` |
 | Esc | quit |
 
 Startup flags:
