@@ -107,7 +107,10 @@ impl App {
     fn compose_frame(&self) -> (IndexedFrame, Vec<[u8; 3]>) {
         let screen = self.runtime.screen();
 
-        let mut display = if matches!(screen, Screen::Map | Screen::Travel | Screen::Encounter) {
+        let mut display = if matches!(
+            screen,
+            Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
+        ) {
             let palette = &self.runtime.session().palettes().regional_map();
             let markers = self.runtime.map_markers();
             let camera = self.runtime.map_camera();
@@ -323,6 +326,13 @@ impl App {
                 draw_game_lost(&mut copy, self.runtime.session());
                 display = Some(copy);
             }
+            Screen::MapMessage => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_map_message(&mut copy, &self.runtime);
+                display = Some(copy);
+            }
             Screen::Encounter => {
                 let mut copy = display
                     .take()
@@ -335,7 +345,10 @@ impl App {
 
         let session = self.runtime.session();
         let frame = display.unwrap_or_else(|| session.frame.clone());
-        let palette = if matches!(screen, Screen::Map | Screen::Travel | Screen::Encounter) {
+        let palette = if matches!(
+            screen,
+            Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
+        ) {
             session.palettes().regional_map().colors
         } else {
             session.scene_palette().colors.clone()
@@ -830,6 +843,27 @@ fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], sel
         &format!("PAGE {}/{}", page + 1, files.len().div_ceil(13)),
         Some(8),
     );
+}
+
+/// Map message window (`FUN_1772_000e` from the arrival callback): stone
+/// window at (10, 10) with the text; any key or click continues.
+fn draw_map_message(frame: &mut IndexedFrame, runtime: &Runtime) {
+    let session = runtime.session();
+    let (Some(font), Some(text)) = (session.font(), runtime.map_message()) else {
+        return;
+    };
+    let lines: Vec<&str> = text.split('\n').collect();
+    let height = 10 + 10 * lines.len() as i32;
+    let (ox, oy) = match runtime.panel() {
+        Some(panel) => draw_panel(frame, session, panel, 8, 10, 0x11d + 0x20, height),
+        None => {
+            fill_rect(frame, 0, 0, 320, height as u16 + 10, 0);
+            (16, 15)
+        }
+    };
+    for (row, line) in lines.iter().enumerate() {
+        font.draw_text(frame, ox, oy + row as i32 * 10, line, None);
+    }
 }
 
 /// Map encounter dialog (`FUN_2920_0a12` -> `FUN_1772_000e`): stone window at

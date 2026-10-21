@@ -63,6 +63,8 @@ pub enum Screen {
     Dialogue,
     /// Map encounter dialog (`FUN_2920_0a12`).
     Encounter,
+    /// Map message window (arrivals, burnings); any key continues.
+    MapMessage,
     /// `GAMELOST` screen (original loop state `-4`).
     GameLost,
     /// The loop has been asked to terminate.
@@ -90,6 +92,7 @@ impl Screen {
             Self::Battle => "BATTLE",
             Self::Dialogue => "DIALOGUE",
             Self::Encounter => "ENCOUNTER",
+            Self::MapMessage => "MAP",
             Self::GameLost => "GAME LOST",
             Self::Quit => "QUIT",
         }
@@ -219,6 +222,11 @@ pub struct Runtime {
     map_accum: Duration,
     encounter: Option<EncounterDialog>,
     encounter_index: usize,
+    /// Messages waiting to be shown on the map, oldest first.
+    map_messages: std::collections::VecDeque<String>,
+    /// What to do once the messages are read: enter this marker / lose.
+    pending_enter: Option<usize>,
+    pending_lost: bool,
 }
 
 impl Runtime {
@@ -292,6 +300,9 @@ impl Runtime {
             map_accum: Duration::ZERO,
             encounter: None,
             encounter_index: 0,
+            map_messages: std::collections::VecDeque::new(),
+            pending_enter: None,
+            pending_lost: false,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
         runtime.sync_scene_index();
@@ -776,20 +787,25 @@ impl Runtime {
             if let Some(e) = sim.entity(id) {
                 self.map_camera = worldmap::camera_for(e.x() as u16, e.y() as u16);
             }
+            let mut stop = false;
             for event in events {
                 match event {
-                    MapEvent::Arrived { id: who, location } if who == id => {
-                        self.map_accum = Duration::ZERO;
-                        let row = usize::from(location).wrapping_sub(1);
-                        if let Some(index) = self
-                            .map_markers()
-                            .iter()
-                            .position(|m| location != 0 && m.location_index == row)
-                        {
-                            self.travel_index = index;
-                            out.extend(self.travel_to_selected());
+                    MapEvent::Arrived {
+                        id: who,
+                        location,
+                        messages,
+                        game_lost,
+                    } => {
+                        self.map_messages.extend(messages);
+                        self.pending_lost |= game_lost;
+                        if who == id {
+                            stop = true;
+                            let row = usize::from(location).wrapping_sub(1);
+                            self.pending_enter = self
+                                .map_markers()
+                                .iter()
+                                .position(|m| location != 0 && m.location_index == row);
                         }
-                        return out;
                     }
                     MapEvent::Encounter(dialog) => {
                         self.encounter = Some(dialog);
@@ -799,11 +815,55 @@ impl Runtime {
                         out.push(RuntimeEvent::ScreenChanged(Screen::Encounter));
                         return out;
                     }
-                    MapEvent::Arrived { .. } => {}
                 }
+            }
+            if !self.map_messages.is_empty() {
+                self.map_accum = Duration::ZERO;
+                self.screen = Screen::MapMessage;
+                out.push(RuntimeEvent::ScreenChanged(Screen::MapMessage));
+                return out;
+            }
+            if stop || self.pending_lost {
+                self.map_accum = Duration::ZERO;
+                out.extend(self.finish_map_messages());
+                return out;
             }
         }
         out
+    }
+
+    /// The message shown by the map message window.
+    #[must_use]
+    pub fn map_message(&self) -> Option<&str> {
+        self.map_messages.front().map(String::as_str)
+    }
+
+    /// Dismiss the current map message; after the last one, do what the
+    /// arrival left pending.
+    fn next_map_message(&mut self) -> Vec<RuntimeEvent> {
+        self.map_messages.pop_front();
+        if self.map_messages.is_empty() {
+            self.screen = Screen::Map;
+            let mut out = vec![RuntimeEvent::ScreenChanged(Screen::Map)];
+            out.extend(self.finish_map_messages());
+            out
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn finish_map_messages(&mut self) -> Vec<RuntimeEvent> {
+        if self.pending_lost {
+            self.pending_lost = false;
+            self.commit_mapsim();
+            self.lose_game();
+            return vec![RuntimeEvent::GameLost];
+        }
+        if let Some(index) = self.pending_enter.take() {
+            self.travel_index = index;
+            return self.travel_to_selected();
+        }
+        Vec::new()
     }
 
     /// Send the party to the selected marker; enter it at once when the party
@@ -1284,6 +1344,7 @@ impl Runtime {
             }
             Screen::Map | Screen::Travel => self.handle_map_key(key),
             Screen::Encounter => self.handle_encounter_key(key),
+            Screen::MapMessage => self.next_map_message(),
             Screen::Status => match key {
                 Key::Status | Key::Cancel => {
                     self.close_modal();
@@ -1600,6 +1661,7 @@ impl Runtime {
                 Vec::new()
             }
             Screen::Map | Screen::Travel => self.click_map(x, y),
+            Screen::MapMessage => self.next_map_message(),
             Screen::Encounter => {
                 let hit = self.encounter_button_rects().iter().position(|&(bx, by, bw)| {
                     (bx..bx + bw).contains(&x) && (by..by + 12).contains(&y)

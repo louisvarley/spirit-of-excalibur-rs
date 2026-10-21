@@ -48,11 +48,17 @@ pub fn dgroup_from_exe(exe: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Something that happened during a round.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MapEvent {
     /// The entity for character `id` reached its target at `location`
-    /// (`FUN_2d65_09d4`, 0 when not on a location).
-    Arrived { id: u8, location: u8 },
+    /// (`FUN_2d65_09d4`, 0 when not on a location); the arrival callback
+    /// (`arrival::fun_2920_026c`) produced `messages` and maybe lost the game.
+    Arrived {
+        id: u8,
+        location: u8,
+        messages: Vec<String>,
+        game_lost: bool,
+    },
     /// An encounter dialog opened.
     Encounter(EncounterDialog),
 }
@@ -202,8 +208,16 @@ impl MapSim {
             self.entities[i] = e;
             if ev.arrived {
                 let id = self.entities[i].id() as u8;
-                let location = encounter::location_at(&self.ds, self.entities[i].x(), self.entities[i].y());
-                events.push(MapEvent::Arrived { id, location });
+                let location =
+                    encounter::location_at(&self.ds, self.entities[i].x(), self.entities[i].y());
+                // The callback runs inside the round, before later entities step.
+                let outcome = crate::arrival::fun_2920_026c(&mut self.ds, &mut self.entities, i);
+                events.push(MapEvent::Arrived {
+                    id,
+                    location,
+                    messages: outcome.messages,
+                    game_lost: outcome.game_lost,
+                });
             }
         }
         let shift = self.ds[SHIFT] & 0x1f;
