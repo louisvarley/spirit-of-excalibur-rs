@@ -44,6 +44,8 @@ struct App {
     story_mode: bool,
     paused: bool,
     story_page: usize,
+    travel_mode: bool,
+    travel_index: usize,
 }
 
 impl App {
@@ -76,6 +78,8 @@ impl App {
             story_mode: start_story,
             paused: false,
             story_page: 0,
+            travel_mode: false,
+            travel_index: 0,
         }
     }
 
@@ -95,11 +99,37 @@ impl App {
         self.update_title();
     }
 
+    fn travel_to_selected(&mut self) {
+        let locations: Vec<_> = self
+            .session
+            .state
+            .locations
+            .iter()
+            .filter(|location| !location.name().is_empty())
+            .collect();
+        let Some(location) =
+            locations.get(self.travel_index.min(locations.len().saturating_sub(1)))
+        else {
+            return;
+        };
+        let Some(scene_id) = location.scene_id() else {
+            return;
+        };
+        if let Err(error) = self.session.enter_scene(scene_id) {
+            eprintln!("travel to scene {scene_id}: {error}");
+            return;
+        }
+        self.travel_mode = false;
+        self.update_title();
+    }
+
     fn update_title(&self) {
         let Some(window) = &self.window else {
             return;
         };
-        let mode = if self.story_mode {
+        let mode = if self.travel_mode {
+            "TRAVEL".to_string()
+        } else if self.story_mode {
             "CHRONICLE".to_string()
         } else if self.paused {
             "PAUSED".to_string()
@@ -116,7 +146,7 @@ impl App {
             )
         };
         window.set_title(&format!(
-            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  H chronicle  P pause  Space frame  Esc quit"
+            "Spirit of Excalibur - {mode}  |  arrows/click scene  M map  I status  T travel  H chronicle  P pause  Esc quit"
         ));
     }
 
@@ -169,6 +199,11 @@ impl App {
                 self.panel.as_ref(),
                 self.story_page,
             );
+            display = Some(copy);
+        }
+        if self.travel_mode {
+            let mut copy = display.take().unwrap_or_else(|| self.session.frame.clone());
+            draw_travel(&mut copy, &self.session, self.travel_index);
             display = Some(copy);
         }
 
@@ -261,7 +296,13 @@ impl ApplicationHandler for App {
                     .window
                     .as_ref()
                     .map_or(1.0, |window| f64::from(window.inner_size().width));
-                if self.story_mode {
+                if self.travel_mode {
+                    if self.cursor.0 >= width / 2.0 {
+                        self.travel_index = self.travel_index.saturating_add(1);
+                    } else {
+                        self.travel_index = self.travel_index.saturating_sub(1);
+                    }
+                } else if self.story_mode {
                     if self.cursor.0 >= width / 2.0 {
                         self.story_page = self.story_page.wrapping_add(1);
                     } else {
@@ -275,6 +316,24 @@ impl ApplicationHandler for App {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                if self.travel_mode {
+                    match event.physical_key {
+                        PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
+                        PhysicalKey::Code(KeyCode::KeyT) => {
+                            self.travel_mode = false;
+                            self.update_title();
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowUp) => {
+                            self.travel_index = self.travel_index.saturating_sub(1);
+                        }
+                        PhysicalKey::Code(KeyCode::ArrowDown) => {
+                            self.travel_index = self.travel_index.saturating_add(1);
+                        }
+                        PhysicalKey::Code(KeyCode::Enter) => self.travel_to_selected(),
+                        _ => {}
+                    }
+                    return;
+                }
                 if self.story_mode {
                     match event.physical_key {
                         PhysicalKey::Code(KeyCode::Escape) => event_loop.exit(),
@@ -321,6 +380,10 @@ impl ApplicationHandler for App {
                         self.story_mode = true;
                         self.update_title();
                     }
+                    PhysicalKey::Code(KeyCode::KeyT) => {
+                        self.travel_mode = true;
+                        self.update_title();
+                    }
                     _ => {}
                 }
             }
@@ -332,7 +395,11 @@ impl ApplicationHandler for App {
         let now = Instant::now();
         let delta = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
-        if self.session.animation_count() > 0 && !self.paused && !self.story_mode {
+        if self.session.animation_count() > 0
+            && !self.paused
+            && !self.story_mode
+            && !self.travel_mode
+        {
             self.animation_accum += delta;
             while self.animation_accum >= TICK {
                 self.session.advance_animation_frame();
@@ -414,6 +481,46 @@ fn draw_story(
         174,
         &format!("{}/{}", index + 1, story.paragraphs.len()),
         Some(color),
+    );
+}
+
+fn draw_travel(frame: &mut IndexedFrame, session: &Session, selected: usize) {
+    fill_rect(frame, 0, 0, 320, 200, 0);
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 8, 6, "TRAVEL", Some(8));
+    font.draw_text(frame, 60, 6, "ENTER GO  T CLOSE  UP/DOWN", Some(8));
+    let locations: Vec<_> = session
+        .state
+        .locations
+        .iter()
+        .filter(|location| !location.name().is_empty())
+        .collect();
+    if locations.is_empty() {
+        font.draw_text(frame, 8, 24, "NO LOCATIONS", Some(8));
+        return;
+    }
+    let selected = selected.min(locations.len() - 1);
+    let page = selected / 13;
+    for row in 0..13 {
+        let index = page * 13 + row;
+        let Some(location) = locations.get(index) else {
+            break;
+        };
+        let marker = if index == selected { "*" } else { " " };
+        let scene = location
+            .scene_id()
+            .map_or_else(|| "--".to_string(), |id| id.to_string());
+        let line = format!("{marker}{:<18} {}", location.name(), scene);
+        font.draw_text(frame, 8, 20 + row as i32 * 12, &line, Some(8));
+    }
+    font.draw_text(
+        frame,
+        220,
+        188,
+        &format!("PAGE {}/{}", page + 1, locations.len().div_ceil(13)),
+        Some(8),
     );
 }
 
@@ -705,6 +812,7 @@ fn main() -> Result<()> {
         start_story,
     );
     app.paused = paused;
+    app.travel_mode = args.iter().any(|arg| arg == "--travel");
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }

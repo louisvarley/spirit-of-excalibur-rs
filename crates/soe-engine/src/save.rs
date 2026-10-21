@@ -65,6 +65,21 @@ impl Location {
     pub fn kind(&self) -> u16 {
         u16::from_le_bytes([self.raw[0x16], self.raw[0x17]])
     }
+
+    /// Scene record used when travelling here.
+    ///
+    /// Locations use kinds `600..=614`; the low value maps to `SCENES.RES`
+    /// ids `60` and `1..=14` respectively. This mapping is provisional but
+    /// matches the observed Colchester/kind 605 -> scene 5 case.
+    #[must_use]
+    pub fn scene_id(&self) -> Option<u16> {
+        match self.kind() {
+            600 => Some(60),
+            kind @ 601..=660 => Some(kind - 600),
+            id @ 1..=60 => Some(id),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +244,7 @@ mod tests {
         assert_eq!(state.characters[0].name(), "Constantine");
         assert_eq!(state.characters[1].name(), "Bedivere");
         assert_eq!(state.locations[0].name(), "Colchester");
+        assert_eq!(state.locations[0].scene_id(), Some(5));
         assert_eq!(state.items[0].name(), "gold besant");
         assert_eq!(state.spells[0].name(), "Repletion");
         assert_eq!(state.tail22.len(), 22);
