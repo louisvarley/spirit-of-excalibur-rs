@@ -39,6 +39,7 @@ The process needs the original game files; they remain git-ignored.
 | T | travel list (up/down select, Enter go, T closes) |
 | S | save/load browser (Enter load, F5 quick-save, S close) |
 | P | pause / close the pause panel |
+| F2 | mute/unmute music |
 | F5 | quick-save to `QUICK.SAV` |
 | F9 | quick-load from `QUICK.SAV` |
 | Esc | quit |

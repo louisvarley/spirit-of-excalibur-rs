@@ -18,6 +18,8 @@ soe-res = { path = "../soe-res" }
 soe-video = { path = "../soe-video" }
 winit = "0.30"
 softbuffer = "0.4"
+cpal = "0.18"
+oplon = "1.0"
 
 [lints]
 workspace = true

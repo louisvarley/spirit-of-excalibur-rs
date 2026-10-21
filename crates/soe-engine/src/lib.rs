@@ -36,3 +36,5 @@ pub mod font;
 pub mod story;
 
 pub mod battle;
+
+pub mod smus;

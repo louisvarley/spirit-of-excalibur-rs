@@ -63,7 +63,9 @@ Updated: M1/M2/M3 foundation session.
 - Inventory/economy/magic/trade: read-only status; item/stat layouts not
   reversed.
 - Combat: not started; battle tables/formulas not reversed.
-- Audio, packaging and upscale remain.
+- Audio: SMUS parser + OPL2/cpal map music implemented; per-scene cues and
+  driver-exact instruments remain.
+- Packaging: release script and clean distribution folder implemented.
 
 ## Next
 
@@ -71,4 +73,4 @@ Updated: M1/M2/M3 foundation session.
 2. Reverse character/item/equipment layout and trade/spell actions.
 3. Reverse battle setup/round tables and outcomes.
 4. Port the exact `FUN_2d65_2cd9` state loop.
-5. OPL2/SMUS audio, packaging, upscale.
+5. Per-scene audio cues, packaging polish, upscale.

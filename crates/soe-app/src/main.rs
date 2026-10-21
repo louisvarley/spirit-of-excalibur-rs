@@ -13,9 +13,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod audio;
+
 use anyhow::{Context, Result};
 use soe_assets::Palette;
 use soe_engine::session::Session;
+use soe_engine::smus::MusicLibrary;
 use soe_engine::story::HintBook;
 use soe_video::{IndexedFrame, decode_planar};
 use winit::application::ApplicationHandler;
@@ -54,6 +57,7 @@ struct App {
     transition_start: Option<Instant>,
     action_mode: bool,
     action_index: usize,
+    audio: Option<audio::AudioPlayer>,
 }
 
 impl App {
@@ -99,6 +103,7 @@ impl App {
             transition_start: None,
             action_mode: false,
             action_index: 0,
+            audio: None,
         }
     }
 
@@ -522,6 +527,11 @@ impl ApplicationHandler for App {
                         self.action_mode = true;
                         self.action_index = 0;
                         self.update_title();
+                    }
+                    PhysicalKey::Code(KeyCode::F2) => {
+                        if let Some(audio) = &self.audio {
+                            audio.toggle_mute();
+                        }
                     }
                     PhysicalKey::Code(KeyCode::F5) => self.save_quick(),
                     PhysicalKey::Code(KeyCode::F9) => {
@@ -1051,6 +1061,13 @@ fn main() -> Result<()> {
     let map = load_map(&game_dir, &session.palettes().room)?;
     let panel = load_record_image(&game_dir.join("RES32").join("INTF.RES"), 621).ok();
     let story = HintBook::load(game_dir.join("HINT.RES")).ok();
+    let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
+    let audio = audio::AudioPlayer::new();
+    if let (Some(player), Some(library)) = (&audio, &music) {
+        if let Some(song) = library.map() {
+            player.play_score(&song.score);
+        }
+    }
     let start_story = args.iter().any(|arg| arg == "--story");
 
     let event_loop = EventLoop::new().context("creating event loop")?;
@@ -1069,6 +1086,7 @@ fn main() -> Result<()> {
         start_status,
         start_story,
     );
+    app.audio = audio;
     app.paused = paused;
     app.travel_mode = args.iter().any(|arg| arg == "--travel");
     app.save_mode = args.iter().any(|arg| arg == "--saves");
