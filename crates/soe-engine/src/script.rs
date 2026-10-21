@@ -379,12 +379,40 @@ pub trait ScriptHost: ScriptWorld {
     /// `FUN_14b0_0301(old)` then `FUN_14b0_0251(res, 0)`: replace a
     /// widget's image, returning the new handle.
     fn load_image(&mut self, old: u32, res: u16) -> u32;
+    /// `FUN_14b0_0251(res, variant)`: load a sprite sheet.
+    fn load_sprite(&mut self, res: u16, variant: u16) -> u32;
+    /// `FUN_14b0_0122(res)`: a whole image's handle, width and height.
+    fn static_image(&mut self, res: u16) -> (u32, u16, u16);
     /// A spawned widget shares its parent's image (header byte 0 counts).
     fn retain_image(&mut self, image: u32);
+    /// `FUN_15b8_0834` frees a removed widget's image by its flags
+    /// (0x10, 0x20 or 0x40 select the release call).
+    fn release_image(&mut self, flags: u16, image: u32);
     fn event(&mut self, event: ScriptEvent);
     /// Handlers 14 (talk, `FUN_26c5_071a`) and 15 (combat,
     /// `FUN_20b5_1dff`).
     fn hook(&mut self, handler: u16, arg: u16, scene: &mut ScriptScene) -> u8;
+}
+
+/// Arguments of `FUN_15b8_0461`. `width` doubles as the first frame when
+/// a sprite sheet is used (flag 0x40).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SpawnArgs {
+    pub flags: u16,
+    /// Resource to load (0: use `image`).
+    pub res: u16,
+    pub image: u32,
+    /// `+0x06`/`+0x08`: the widget's callback (offset, segment).
+    pub callback: (u16, u16),
+    pub id: u16,
+    /// `+0x0C`; also the variant passed to the sprite loader.
+    pub variant: u16,
+    pub script: u8,
+    pub depth: u8,
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
 }
 
 fn image(widget: &Widget) -> u32 {
@@ -437,42 +465,62 @@ impl ScriptScene {
         })
     }
 
-    /// `FUN_15b8_0461` as handler 12 calls it: a new widget copying a
-    /// parent (no resource to load), inserted after every widget deeper
-    /// than it. Returns its index.
-    fn fun_15b8_0461(&mut self, parent: &Widget, host: &dyn ScriptHost) -> usize {
-        let flags = w(parent, 0);
-        let img = image(parent);
-        let y = w(parent, 0x10);
-        let x = w(parent, 0x12);
+    /// `FUN_15b8_0461`: create a widget and insert it after every widget
+    /// deeper than it (`+0x0F`, larger first). Returns its index.
+    pub fn fun_15b8_0461(&mut self, a: &SpawnArgs, host: &mut dyn ScriptHost) -> usize {
+        let mut image_handle = a.image;
+        let (mut x, mut y, mut depth) = (a.x, a.y, a.depth);
+        let (mut width, mut height) = (a.width, a.height);
         let mut frame = 0u8;
-        let mut width = u16::from(parent[0x26]);
-        let mut height = 0u16;
-        if flags & 0x40 != 0 && img != 0 {
-            frame = parent[0x26];
-            let sheet = host.sheet(img);
-            let at = usize::from(frame) * 6;
-            height = u16::from(sheet.get(at + 9).copied().unwrap_or(0));
-            width = u16::from(sheet.get(at + 8).copied().unwrap_or(0));
+        if a.flags & 0x20 != 0 && a.res != 0 {
+            // FUN_14b0_0122: a whole image; header +0x0A width, +0x08 height.
+            let (handle, w_, h_) = host.static_image(a.res);
+            image_handle = handle;
+            width = w_;
+            height = h_;
+            if a.flags & 0x100 != 0 && depth != 0xd3 {
+                let span = if a.flags & 0x2000 != 0 && width > 0x30 { width - 0x30 } else { width };
+                x = x.wrapping_sub(span >> 1);
+                y = y.wrapping_sub(height >> 1);
+            }
+            if u16::from(depth) == y {
+                depth = depth.wrapping_add(height as u8);
+            }
+        }
+        if a.flags & 0x40 != 0 {
+            if a.res != 0 {
+                image_handle = host.load_sprite(a.res, a.variant);
+            }
+            if image_handle != 0 {
+                frame = width as u8;
+                let sheet = host.sheet(image_handle);
+                let at = usize::from(frame) * 6;
+                height = u16::from(sheet.get(at + 9).copied().unwrap_or(0));
+                width = u16::from(sheet.get(at + 8).copied().unwrap_or(0));
+                if a.res != 0 {
+                    y = y.wrapping_sub(height);
+                }
+            }
         }
         let mut nw: Widget = [0; 0x36];
-        set_w(&mut nw, 0, flags);
-        nw[2..6].copy_from_slice(&img.to_le_bytes());
-        set_w(&mut nw, 0x0a, w(parent, 0x0a) | 0x8000);
-        set_w(&mut nw, 0x0c, w(parent, 0x0c));
+        set_w(&mut nw, 0, a.flags);
+        nw[2..6].copy_from_slice(&image_handle.to_le_bytes());
+        set_w(&mut nw, 0x06, a.callback.0);
+        set_w(&mut nw, 0x08, a.callback.1);
+        set_w(&mut nw, 0x0a, a.id);
+        set_w(&mut nw, 0x0c, a.variant);
         // FUN_335c_000f: toupper.
-        nw[0x0e] = parent[0x0e].to_ascii_uppercase();
-        nw[0x0f] = parent[0x0f];
+        nw[0x0e] = a.script.to_ascii_uppercase();
+        nw[0x0f] = depth;
         let r = [y, x, y.wrapping_add(height), x.wrapping_add(width)].map(|v| v as i16);
         set_rect(&mut nw, 0x10, r);
         set_w(&mut nw, 0x18, height);
         set_w(&mut nw, 0x1a, width);
         set_rect(&mut nw, 0x1c, r);
         nw[0x26] = frame;
-        if flags & 0x2000 != 0 && width > 0x30 {
+        if a.flags & 0x2000 != 0 && width > 0x30 {
             set_w(&mut nw, 0x1a, width - 0x30);
         }
-        let depth = nw[0x0f];
         let mut at = self.widgets.len();
         if at == 0 {
             self.widgets.push(nw);
@@ -519,7 +567,20 @@ impl ScriptScene {
         };
         match arg & 0xf00 {
             0x000 => {
-                let at = self.fun_15b8_0461(&me, host);
+                let args = SpawnArgs {
+                    flags: w(&me, 0),
+                    image: image(&me),
+                    callback: (0, 0),
+                    id: w(&me, 0x0a) | 0x8000,
+                    variant: w(&me, 0x0c),
+                    script: me[0x0e],
+                    depth: me[0x0f],
+                    x: w(&me, 0x12),
+                    y: w(&me, 0x10),
+                    width: u16::from(me[0x26]),
+                    ..SpawnArgs::default()
+                };
+                let at = self.fun_15b8_0461(&args, host);
                 host.retain_image(image(&me));
                 self.widgets[at][0x27] = arg as u8;
                 set_w(&mut self.widgets[at], 0x2e, w(&me, 0x2e));
@@ -698,6 +759,123 @@ impl ScriptScene {
             set_w(wd, 0, w(wd, 0) | 2);
         }
     }
+
+    /// `FUN_18cb_05b0`: run a follower widget (flags 0x220) to its next
+    /// frame (6) or wait (1), then clip its old rect and mark it for redraw.
+    pub fn fun_18cb_05b0(&mut self, host: &mut dyn ScriptHost) {
+        loop {
+            let clock = host.clock();
+            let cur = self.cur();
+            let program = host.program(self.widgets[cur][0x0e]);
+            let word = program.get(usize::from(self.widgets[cur][0x27])).copied().unwrap_or(0);
+            self.word_9a76 = word;
+            let ret = self.dispatch(word >> 12, word & 0xfff, clock, host);
+            let cur = self.cur();
+            if ret == 1 {
+                return;
+            }
+            if ret & 2 != 0 {
+                self.widgets[cur][0x27] = self.widgets[cur][0x27].wrapping_add(1);
+            }
+            if ret == 6 {
+                break;
+            }
+        }
+        let cur = self.cur();
+        let wd = &mut self.widgets[cur];
+        let (clipped, _) = fun_30ec_0006(rect(wd, 0x1c), self.clip);
+        set_rect(wd, 0x1c, clipped);
+        set_w(wd, 0, w(wd, 0) | 2);
+    }
+
+    /// `FUN_15b8_0834`: remove widget `index`, releasing its image, and
+    /// keep `current` pointing at a valid widget.
+    fn fun_15b8_0834(&mut self, index: usize, host: &mut dyn ScriptHost) {
+        let wd = self.widgets.remove(index);
+        host.release_image(w(&wd, 0), image(&wd));
+        if index as i16 + 1 <= self.current {
+            self.current -= 1;
+        }
+        if self.widgets.len() as i16 <= self.current {
+            self.current = self.widgets.len() as i16 - 1;
+        }
+    }
+
+    /// `FUN_18cb_0002`: one scene frame. Runs every widget but the first
+    /// whose timer is due (last to first), then collects its changed area
+    /// together with any overlapping widgets that also need redrawing.
+    /// Returns those areas, clipped to the scene, in the order the
+    /// original redraws them (all widgets meeting an area are drawn back
+    /// to front by the presenter). Finally removes widgets parked at
+    /// x >= 9999 that need no redraw.
+    pub fn fun_18cb_0002(&mut self, host: &mut dyn ScriptHost) -> Vec<[i16; 4]> {
+        let mut drawn = Vec::new();
+        let align = |r: &mut [i16; 4]| {
+            r[1] &= !7;
+            r[3] = r[3].wrapping_add(8) & !7;
+        };
+        self.current = self.widgets.len() as i16 - 1;
+        while self.current > 0 {
+            let cur = self.cur();
+            let timer = u32::from_le_bytes([
+                self.widgets[cur][0x30],
+                self.widgets[cur][0x31],
+                self.widgets[cur][0x32],
+                self.widgets[cur][0x33],
+            ]);
+            if timer <= host.clock() {
+                let flags = w(&self.widgets[cur], 0);
+                if flags & 0x240 == 0x240 {
+                    self.fun_18cb_066a(host);
+                } else if flags & 0x220 == 0x220 {
+                    self.fun_18cb_05b0(host);
+                }
+                let cur = self.cur();
+                let wd = &mut self.widgets[cur];
+                if w(wd, 0) & 2 != 0 {
+                    set_w(wd, 0, (w(wd, 0) ^ 2) | 4);
+                    let mut dirty = rect(wd, 0x1c);
+                    align(&mut dirty);
+                    'merge: loop {
+                        for o in &mut self.widgets {
+                            let f = w(o, 0);
+                            if f & 0xc04 != 0 || f == 0 || !fun_30ec_0006(rect(o, 0x1c), dirty).1 {
+                                continue;
+                            }
+                            set_w(o, 0, f | 4);
+                            if f & 2 != 0 {
+                                dirty = fun_18cb_16f0(rect(o, 0x1c), dirty);
+                                align(&mut dirty);
+                                set_w(o, 0, (f | 4) ^ 2);
+                                continue 'merge;
+                            }
+                        }
+                        break;
+                    }
+                    let (clipped, visible) = fun_30ec_0006(dirty, self.clip);
+                    if visible {
+                        for o in self.widgets.iter_mut().rev() {
+                            if w(o, 0) & 4 != 0 {
+                                set_w(o, 0, w(o, 0) ^ 4);
+                            }
+                        }
+                        drawn.push(clipped);
+                    }
+                }
+            }
+            self.current -= 1;
+        }
+        self.current = 1;
+        while (self.widgets.len() as i16) > self.current {
+            let cur = self.cur();
+            let wd = &self.widgets[cur];
+            if w(wd, 0x12) as i16 >= 0x270f && w(wd, 0) & 2 == 0 {
+                self.fun_15b8_0834(cur, host);
+            }
+            self.current += 1;
+        }
+        drawn
+    }
 }
 
 struct HostWorld<'a>(&'a mut dyn ScriptHost);
@@ -813,6 +991,13 @@ mod tests {
             self.loads.remove(0)
         }
         fn retain_image(&mut self, _image: u32) {}
+        fn load_sprite(&mut self, _res: u16, _variant: u16) -> u32 {
+            self.loads.remove(0)
+        }
+        fn static_image(&mut self, _res: u16) -> (u32, u16, u16) {
+            unreachable!("not recorded")
+        }
+        fn release_image(&mut self, _flags: u16, _image: u32) {}
         fn event(&mut self, event: ScriptEvent) {
             match event {
                 ScriptEvent::Music(n) => self.sounds.push(("music".into(), n)),
@@ -830,8 +1015,19 @@ mod tests {
     /// (`tests/oracle/scene_vectors.py`).
     #[test]
     fn matches_original_scene_steps() {
-        let Ok(text) = std::fs::read_to_string("../../tests/vectors/scene_steps.json") else {
-            eprintln!("SKIP: tests/vectors/scene_steps.json absent");
+        replay_scene("scene_steps.json", false);
+    }
+
+    /// Replays whole scene frames (`FUN_18cb_0002`) recorded in the
+    /// original (`tests/oracle/scene_vectors.py --frames`).
+    #[test]
+    fn matches_original_scene_frames() {
+        replay_scene("scene_frames.json", true);
+    }
+
+    fn replay_scene(file: &str, frames: bool) {
+        let Ok(text) = std::fs::read_to_string(format!("../../tests/vectors/{file}")) else {
+            eprintln!("SKIP: tests/vectors/{file} absent");
             return;
         };
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -874,7 +1070,7 @@ mod tests {
                     word_9a79: g["word_9a79"].as_u64().unwrap() as u16,
                     clip: [0, 1, 2, 3].map(|k| clip[k] as u16 as i16),
                 };
-                let mut clocks = vec![call["clock0"].as_u64().unwrap() as u32];
+                let mut clocks = if frames { Vec::new() } else { vec![call["clock0"].as_u64().unwrap() as u32] };
                 clocks.extend(nums(&call["clocks"]).into_iter().map(|c| c as u32));
                 let mut host = Replay {
                     clocks,
@@ -884,7 +1080,11 @@ mod tests {
                     sheets: sheets.clone(),
                     sounds: Vec::new(),
                 };
-                scene.fun_18cb_066a(&mut host);
+                if frames {
+                    scene.fun_18cb_0002(&mut host);
+                } else {
+                    scene.fun_18cb_066a(&mut host);
+                }
                 let ctx = format!("{} step {n}", run["snap"]);
                 let after = widgets(&call["after"]);
                 assert_eq!(scene.widgets.len(), after.len(), "{ctx}: widget count");
@@ -907,7 +1107,7 @@ mod tests {
                 done += 1;
             }
         }
-        eprintln!("scene steps matched: {done}; skipped (talk/combat hooks): {hooked}");
+        eprintln!("{file}: matched {done}; skipped (talk/combat hooks): {hooked}");
         assert!(done > 0);
     }
 }

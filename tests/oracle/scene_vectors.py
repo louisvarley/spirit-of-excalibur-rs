@@ -6,9 +6,11 @@ widget list (DS:969D/969F) and the scene globals before and after, the clock
 at each loop check, the random numbers drawn, the sounds started, the images
 loaded, and whether the talk/combat hooks ran. Scripts (DS:1E2A) and sprite
 sheet headers are stored once per snapshot.
-Writes tests/vectors/scene_steps.json.
+Writes tests/vectors/scene_steps.json. With --frames, records whole scene
+frames (FUN_18cb_0002) instead, with the clock captured at every read the
+port makes, and writes tests/vectors/scene_frames.json.
 
-    python tests/oracle/scene_vectors.py SNAPSHOT[:TICKS] ...
+    python tests/oracle/scene_vectors.py [--frames] SNAPSHOT[:TICKS] ...
 """
 from __future__ import annotations
 
@@ -32,7 +34,7 @@ def lin(seg: int, off: int) -> int:
     return ((seg - 0x1000 + LOAD_SEG) << 4) + off
 
 
-def record(snap: str, ticks: int) -> dict:
+def record(snap: str, ticks: int, frames: bool = False) -> dict:
     m = DosMachine()
     m.load("EXCAL.EXE")
     m.restore(pickle.loads((OUT / f"{snap}.snap").read_bytes()))
@@ -113,8 +115,13 @@ def record(snap: str, ticks: int) -> dict:
         cur = None
 
     hook = lambda f, seg, off: m.uc.hook_add(UC_HOOK_CODE, f, begin=lin(seg, off), end=lin(seg, off))
-    hook(enter, 0x18CB, 0x066A)
-    hook(loop_check, 0x18CB, 0x072B)
+    if frames:
+        hook(enter, 0x18CB, 0x0002)
+        for off in (0x002B, 0x066A, 0x072B, 0x05CA):
+            hook(loop_check, 0x18CB, off)
+    else:
+        hook(enter, 0x18CB, 0x066A)
+        hook(loop_check, 0x18CB, 0x072B)
     hook(rng, 0x15B8, 0x182E)
     hook(sound("music"), 0x1316, 0x181D)
     hook(sound("sound"), 0x1316, 0x183C)
@@ -122,7 +129,7 @@ def record(snap: str, ticks: int) -> dict:
     hook(loaded, 0x18CB, 0x1418)
     hook(hooked, 0x26C5, 0x071A)
     hook(hooked, 0x20B5, 0x1DFF)
-    hook(leave, 0x18CB, 0x08FE)
+    hook(leave, 0x18CB, 0x05AF if frames else 0x08FE)
     m.run(ticks)
     print(f"{snap}: {len(calls)} steps, {len(programs)} scripts, {len(sheets)} sheets", flush=True)
     return {"snap": snap, "programs": programs, "sheets": {str(k): v for k, v in sheets.items()},
@@ -130,11 +137,14 @@ def record(snap: str, ticks: int) -> dict:
 
 
 def main(argv: list[str]) -> int:
+    frames = "--frames" in argv
     runs = []
     for arg in argv:
+        if arg.startswith("--"):
+            continue
         name, _, ticks = arg.partition(":")
-        runs.append(record(name, int(ticks or 600)))
-    path = ROOT / "tests" / "vectors" / "scene_steps.json"
+        runs.append(record(name, int(ticks or 600), frames))
+    path = ROOT / "tests" / "vectors" / ("scene_frames.json" if frames else "scene_steps.json")
     path.write_text(json.dumps({"runs": runs}))
     print(f"wrote {path}")
     return 0
