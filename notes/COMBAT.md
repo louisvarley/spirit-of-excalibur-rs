@@ -1,26 +1,9 @@
 # Army battle
 
-Status: **battle UI and round loop ported.** `soe-engine::battle` owns the
-orders, round resolution, casualties and outcomes; `soe-engine::runtime` owns
-the `Screen::Battle` transition and the return to the regional map.
-
-## Captures and save states
-
-The supplied screen captures show:
-
-- Round Table units on the left, `Foes...` on the right.
-- Defender/Challenger headings in the alternate (single-army) capture.
-- Foe: `Melehan`, 100 knights, 825 soldiers, 250 archers.
-- Order column: `Charge`, `Engage`, `Flank`, `Retreat`, `Do Round`, `Ignore`;
-  `FUN_20b5_085b` also has an `Attack`/`Defend`/`Withdraw`/`Automatic` set when
-  the caller's `0x10` flag is clear.
-- Bottom message stream, e.g. `SIR BEDIVERE REELS FROM A SHARP BLOW.`
-- A miniature battlefield between the text panes.
-
-The battle save states (`start of battle`, `battle-ongoing-with-casulties`,
-`battle-losses-are-heavy`, `battle-won-returned-to-map`) confirm the live lists
-and the casualty fields. They are user-supplied references and are not
-committed.
+Status: **army battles run on the ported engine** (`soe-engine::army`,
+segment `2449`). `FUN_2449_134e` and its helpers are ported and verified
+against the original; the headless round model that `battle.rs` used to
+hold is gone (only `BattleOutcome` is left there).
 
 ## Live unit records
 
@@ -74,76 +57,89 @@ soldier 825 -> 568
 - Writes the rolling message stream at the bottom and the miniature battlefield
   in the middle.
 
-`Screen::Battle` is the headless equivalent. `soe-app` draws the same
-Round Table/Foes columns, order column, strength totals, unit dots on the
-miniature field and the last three messages.
+`soe-app` draws the same Round Table/Foes columns and order column over the
+stone panel, the field and its tokens (`Session::compose_army`) and the
+latest message.
 
-## Round resolution (`FUN_20b5_1dff`)
+## How the original runs an army battle (2449, ported 2026-10-22)
 
-`FUN_20b5_1dff` resolves one combatant at a time. The relevant path is the
-attack case:
+`FUN_20b5_2a30(mode)` with bit 0x10 calls `FUN_2449_134e`, which runs the
+whole battle inside the UI loop's waits (`FUN_15b8_09f7(&flag)` runs the
+scene until the DGROUP word is 0):
 
-```text
-skill   = max((unit[+0x2A] - 10) / 2, unit[+0x2D])
-roll    = random(100)
-defence = target[+0x2B] + target[+0x2C]
-score   = skill - defence + order_adjustment
-```
+- Set-up: `DS:03C5` (script handler 15) becomes `2449:12DE`; `FUN_2449_0aed`
+  places the tokens; with a screen (`9C56 & 0x20` clear) the panel
+  `FUN_20b5_085b` is drawn and the tick `2449:0A3C` is installed in
+  `DS:01F6`, which clears the message wait `DS:9C58` every 0x78 clock ticks.
+  Each side's leader (`9DAE` / `9DB0`) standing at a castle (location record
+  word `+0x16` 0x258, 0x259, 0x25C or 0x25F) is noted; the deltas between the
+  two leaders are how far a routed side moves on the map. Starting totals go
+  to `DS:9CC6` / `9CC8`.
+- Order loop (`15CB`): `FUN_2449_0255`, wait `9C58`, maybe wait the order
+  menu `9CB0`; a round is fought once `DS:9CDA` is set: by `0255` when the
+  fronts meet, by a token's script (handler 15 op 9), or at once off screen.
+- Round (`1653`..`15CB`/`26D8`), see `fun_2449_134e_round`:
+  side one's orders change state (0x80 -> 1, 0x40 -> 0x80, charge 2 -> 0x40,
+  flank 3 -> 5 -> 1); power = sum of strength x attack `+0x2D` (16-bit
+  product, sign-extended; +2 x attack when `+0x1C` == 1; a charge 1.5 x
+  strength, a flank's second round double). From the second round (or with
+  a side empty) `FUN_2449_1021` may end the battle. Damage to a side =
+  `(rand(8) + 12) x enemy power / own strength` (32-bit, unsigned divide).
+  A character takes a wound per 0x80 of damage whose `rand(0x80)` is below
+  what is left and whose `rand(100)` beats `+0x2E`; at 0 hit points they are
+  killed and `FUN_20b5_1229` runs (a raised story event ends the battle).
+  An army stack loses `strength x damage / (defence +0x2B + castle) >> 7`
+  men (1.5 x in state 0x80); losing all of them clears it from the field
+  and the map. Off screen nothing is shown and token images stay.
+- `FUN_2449_1021(s1, s2, castle1, castle2)`: 3/4 a side is gone; nothing
+  while one side is three times the other; else a side breaks when its
+  share `(s << 4) / start` is below 8 (14 at a castle) or the other share
+  exceeds it by more than 3 (2). Side one at its castle is asked "Fall
+  back to the walls?" (`FUN_2449_0107`). Ghidra misreads several of these
+  branches; the port follows the disassembly.
+- After a rout (1, 2) units that do not hold a castle move away on the map
+  and get a cooldown `+0x1A = (clock >> 8) + 0x3C` (0x46 inside a castle),
+  then `FUN_1b06_071c`. The end (`26D8`) waits three seconds (`DS:0322`),
+  frees the token images and restores handler 15.
 
-If the roll is below `score`, the target takes 1 hit point, or 2 when the roll
-is below `score / 4`. A target whose hit points reach zero is removed from the
-field (`+0x2C = 0`, clear presence bit `0x08`) and a routed/dead message is
-appended. `FUN_2449_0faa` sums the current-strength words at `+0x28` for both
-sides; the 2449 helpers also use it to compare army strength when a battle
-ends.
+Tokens (`FUN_2449_0aed`): flags 0x248 (+1 for side two), depth 0xF5, id
+`character << 8 | slot`, image `DS:9CCA[k]` = resources 0x2EE + k by kind and
+strength, script 0x0D characters, 0x0E soldiers, 0x0F archers, 0x10
+knights (+4 for foes), place from `DS:64B8` (6-byte x, y, taken, first
+step), starting at the place's step + 1. Knights fill places from the back
+(`0x12` down to `0x0C`); Ghidra gets that loop's bound wrong. Tokens are drawn
+at absolute screen coordinates over the field image 0x26C (0x26D for terrain
+classes 1, 6, 9, 12) at (0x90, 0x50). The battle keeps the map palette.
 
-The port keeps the same attack/defence/hit-point interpretation and adds the
-casualties that the save files store: each hit subtracts
-`(attacker strength / 20 + 1) * hit points` men from the target's `+0x28`.
-`Charge`, `Flank` and `Defend` adjust the roll or incoming losses; `Retreat`
-and `Withdraw` leave the field. Resolution uses a small seeded xorshift
-generator so tests can reproduce every round.
+Order buttons: Charge `2449:0420`, Engage `04F2`, Flank `056B`, Retreat
+`063A`, Do Round `0764`, Ignore `0ADE` (sets 0x20: fought off screen);
+a unit row or token click is `0792`, availability `DS:5E30[order] >> kind`.
 
-Victory is reached when every foe unit is routed; defeat when every player
-unit is routed; withdrawal ends the battle immediately. A 30-pass safety limit
-awards the field to the side with the greater remaining strength.
+### Verification
 
-## Runtime integration
+`tests/oracle/army_watch.py` starts a battle in the original from the map
+snapshot (sets the side lists and calls `FUN_20b5_2a30(0x10)` from the map
+loop; the RES32 directory must be present). `tests/oracle/army_vectors.py`
+records five battles (on screen and off, extra orders given) and
+`army::tests::matches_original_army_calls` replays all 74 calls: 13 rounds
+(charge, flank, kills, a story-event death, rout ends), 8 rout checks, 13
+targeting passes, 5 token builds, 9 totals and 26 handler-15 calls. Not
+covered: the "fall back" answer, retreats, defending (`9C56 & 8`) and castle
+battles. A story event (`FUN_26c5_000b`, unported) changes character records,
+so those are not compared after one.
 
-- `Runtime::start_battle(&[player indices], &[foe indices])` builds armies from
-  the live save state.
-- `Runtime::start_battle_with_seed(...)` is the deterministic test entry.
-- `Runtime::start_demo_battle()` uses the current save: present knights plus
-  living army stacks, and `Melehan`/following stacks as the foe. This is the
-  temporary encounter entry until the event/encounter table is reversed.
-- `soe-play --battle` opens the demo battle.
-- Up/Down (or click) selects an order; Enter resolves the selected order;
-  Esc withdraws.
-- On a terminal outcome, casualties are written back to the character records
-  (`+0x28`, `+0x36`, death flag), `RuntimeEvent::BattleEnded` is emitted, and
-  the runtime returns to `Screen::Map`. Saving afterwards persists the result
-  through the normal save writer.
+### In the Rust build
 
-## Tests
-
-- `battle::tests::round_damage_reduces_enemy_strength_and_hp`
-- `battle::tests::battle_transitions_to_victory`
-- `battle::tests::battle_transitions_to_defeat`
-- `battle::tests::withdraw_ends_the_battle_without_round_damage`
-- `battle::tests::casualties_are_written_back_to_character_records`
-- `integration::battle_runs_multiple_rounds_and_returns_to_map_with_casualties`
-- `integration::withdrawing_from_battle_returns_to_map`
-
-Implemented model: `soe-engine::battle::{Battle, BattleUnit, Order,
-BattleOutcome}`.
-
-## Open approximations
-
-- The exact AI target choice and per-unit pathing/formation (`2449:0aed`,
-  `20b5:1705`) are presentation-heavy and not needed for the headless loop.
-- Magic absorption, loot drops and the exact automatic-battle timing remain.
-- Encounter setup still needs the event/encounter table; only the battle lists
-  and record layout are verified.
+`ArmyBattle` (`army/battle.rs`) keeps `134e`'s waits as phases and runs one
+scene frame per 60 Hz tick, so tokens walk by their scripts and handler 15
+calls `FUN_2449_12de`. Approximations: a round body runs in one go and its
+message waits are then replayed two seconds apart (strength changes appear
+when the round starts); the random generator is a stand-in; the terrain
+under the leader is not passed in yet (field 0x26C); the "fall back"
+question answers yes; the order menu's "Select an option" step and the
+panel's mark sprites are not drawn. `Runtime::start_battle` and the map's
+army confrontations open it; `soe-play --battle` opens the demo battle.
+Up/Down pick an order, Left/Right a unit, Enter gives it, Esc ignores.
 
 ## Single combat (observed in the original, 2026-10-21)
 

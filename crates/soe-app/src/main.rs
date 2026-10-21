@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 mod audio;
 
 use anyhow::{Context, Result};
-use soe_engine::battle::{Battle, Order};
+use soe_engine::army::{ArmyBattle, ArmyOrder};
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
@@ -292,12 +292,16 @@ impl App {
             }
             Screen::Battle => {
                 let mut copy = self.runtime.session().frame.clone();
+                panel_or_fill(&mut copy, self.runtime.session(), self.runtime.panel(), 200);
+                if let Some(battle) = self.runtime.battle() {
+                    copy = self.runtime.session().compose_army(copy, battle);
+                }
                 draw_battle(
                     &mut copy,
                     self.runtime.session(),
                     self.runtime.battle(),
                     self.runtime.battle_order_index(),
-                    self.runtime.battle_orders(),
+                    self.runtime.battle_unit(),
                 );
                 display = Some(copy);
             }
@@ -351,9 +355,10 @@ impl App {
 
         let session = self.runtime.session();
         let frame = display.unwrap_or_else(|| session.frame.clone());
+        // The army battle keeps the map's palette.
         let palette = if matches!(
             screen,
-            Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
+            Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage | Screen::Battle
         ) {
             session.palettes().regional_map().colors
         } else {
@@ -1165,114 +1170,61 @@ fn draw_duel(
     }
 }
 
-fn draw_battle(
-    frame: &mut IndexedFrame,
-    session: &Session,
-    battle: Option<&Battle>,
-    selected: usize,
-    orders: &[Order],
-) {
-    fill_rect(frame, 0, 0, 320, 200, 7);
+/// The army battle panel (`FUN_20b5_085b` with bit 0x10): unit rows
+/// left (`DS:9C42`) and right (`DS:9C46`), the order column (`DS:9C3E`),
+/// the latest message at the bottom. The field and tokens are composed by
+/// the session.
+fn draw_battle(frame: &mut IndexedFrame, session: &Session, battle: Option<&ArmyBattle>, order: usize, unit: usize) {
     let Some(font) = session.font() else {
         return;
     };
-    fill_rect(frame, 0, 0, 320, 13, 0);
     let Some(battle) = battle else {
         font.draw_text(frame, 118, 90, "NO BATTLE", None);
         return;
     };
-
-    let (left_title, right_title) = if battle.alternate_orders {
-        ("DEFENDER...", "CHALLENGER...")
-    } else {
-        ("ROUND TABLE...", "FOES...")
-    };
-    font.draw_text(frame, 4, 3, left_title, Some(7));
-    font.draw_text(frame, 132, 3, &format!("ROUND {}", battle.round), Some(7));
-    font.draw_text(frame, 232, 3, right_title, Some(7));
-
-    for (row, unit) in battle.player.iter().take(12).enumerate() {
-        let y = 18 + row as i32 * 8;
-        let color = if unit.is_routed() { 4 } else { 0 };
-        let marker = if unit.is_routed() { "x" } else { " " };
-        font.draw_text(
-            frame,
-            4,
-            y,
-            &format!("{marker}{}", truncate(&unit.display(), 14)),
-            Some(color),
-        );
-    }
-    for (row, unit) in battle.foe.iter().take(12).enumerate() {
-        let y = 18 + row as i32 * 8;
-        let color = if unit.is_routed() { 4 } else { 0 };
-        let marker = if unit.is_routed() { "x" } else { " " };
-        font.draw_text(
-            frame,
-            226,
-            y,
-            &format!("{marker}{}", truncate(&unit.display(), 12)),
-            Some(color),
-        );
-    }
-
-    for (index, order) in orders.iter().enumerate() {
-        let y = 18 + index as i32 * 10;
-        if index == selected {
-            fill_rect(frame, 118, (y - 1) as u16, 90, 9, 0);
-            font.draw_text(frame, 122, y, order.label(), Some(7));
+    let ds = battle.ds();
+    let defending = u16::from_le_bytes([ds[0x9c56], ds[0x9c57]]) & 8 != 0;
+    let (left, right) = if defending { ("DEFENDER...", "CHALLENGER...") } else { ("ROUND TABLE...", "FOES...") };
+    font.draw_text(frame, 6, 5, left, None);
+    font.draw_text(frame, 0xd4, 5, right, None);
+    let row = |side: usize, (id, strength, slot): (u8, u16, u8)| {
+        let rec = 0x2c5e + usize::from(id) * 0x38;
+        let name: String = ds[rec..rec + 12].iter().take_while(|&&b| b != 0).map(|&b| char::from(b)).collect();
+        let army = u16::from_le_bytes([ds[rec + 0x16], ds[rec + 0x17]]) & 0x8000 != 0;
+        let text = if army {
+            // "%d %S%c": the count, the unit and a plural s.
+            format!("{strength} {name}{}", if strength == 1 { "" } else { "s" })
+        } else if side == 0 || slot == 4 {
+            soe_engine::names::display_name(ds, id)
         } else {
-            font.draw_text(frame, 122, y, order.label(), None);
+            name
+        };
+        (text, slot == 4)
+    };
+    let step = 10;
+    for (i, u) in battle.units(0).into_iter().enumerate().take(16) {
+        let (text, out) = row(0, u);
+        let y = 15 + i as i32 * step;
+        if i == unit {
+            font.draw_text(frame, 2, y, ">", None);
         }
+        font.draw_text(frame, 11, y, &truncate(&text, 20), if out { Some(4) } else { None });
     }
-
-    font.draw_text(
-        frame,
-        118,
-        90,
-        &format!(
-            "MEN {}   FOE {}",
-            battle.total_strength(soe_engine::battle::Side::Player),
-            battle.total_strength(soe_engine::battle::Side::Foe)
-        ),
-        None,
-    );
-
-    fill_rect(frame, 118, 102, 196, 56, 2);
-    fill_rect(frame, 118, 102, 196, 1, 0);
-    fill_rect(frame, 118, 157, 196, 1, 0);
-    fill_rect(frame, 118, 102, 1, 56, 0);
-    fill_rect(frame, 313, 102, 1, 56, 0);
-    for (index, unit) in battle.player.iter().take(12).enumerate() {
-        if unit.is_routed() {
-            continue;
+    for (i, u) in battle.units(1).into_iter().enumerate().take(6) {
+        let (text, out) = row(1, u);
+        font.draw_text(frame, 0xd4 + 5, 15 + i as i32 * step, &truncate(&text, 16), if out { Some(4) } else { None });
+    }
+    for (i, o) in ArmyOrder::ALL.iter().enumerate() {
+        let y = 5 + i as i32 * step;
+        let label = o.label().to_ascii_uppercase();
+        let colour = if battle.order_allowed(*o) { None } else { Some(8) };
+        if i == order {
+            font.draw_text(frame, 0x90, y, ">", None);
         }
-        let x = 126 + (index % 3) as u16 * 7;
-        let y = 108 + (index / 3) as u16 * 11;
-        fill_rect(frame, x, y, 2, 3, 8);
+        font.draw_text(frame, 0x96, y, &label, colour);
     }
-    for (index, unit) in battle.foe.iter().take(12).enumerate() {
-        if unit.is_routed() {
-            continue;
-        }
-        let x = 300 - (index % 3) as u16 * 7;
-        let y = 108 + (index / 3) as u16 * 11;
-        fill_rect(frame, x, y, 2, 3, 12);
-    }
-
-    fill_rect(frame, 0, 163, 320, 37, 0);
-    let start = battle.messages.len().saturating_sub(3);
-    for (row, message) in battle.messages[start..].iter().enumerate() {
-        font.draw_text(
-            frame,
-            6,
-            167 + row as i32 * 10,
-            &truncate(message, 50),
-            Some(7),
-        );
-    }
-    if let Some(outcome) = battle.outcome {
-        font.draw_text(frame, 250, 3, outcome.label(), Some(12));
+    if let Some(message) = battle.messages.last() {
+        font.draw_text(frame, 6, 188, &truncate(&message.to_ascii_uppercase(), 52), None);
     }
 }
 

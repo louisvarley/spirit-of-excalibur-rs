@@ -1,6 +1,5 @@
 use std::path::Path;
 
-use soe_engine::battle::BattleOutcome;
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen, TRANSITION};
 use soe_engine::save::GameState;
 use soe_engine::session::Session;
@@ -133,60 +132,36 @@ fn provided_room_saves_parse_with_event_tables() {
     }
 }
 
-fn configure_battle_character(
-    state: &mut GameState,
-    index: usize,
-    name: &str,
-    max_strength: u16,
-    current_strength: u16,
-    hp: u8,
-    attack: u8,
-    defence: u8,
-) {
-    use soe_engine::save::Character;
-    let character = &mut state.characters[index];
-    character.set_name(name);
-    character.raw[Character::MAX_STRENGTH..Character::MAX_STRENGTH + 2]
-        .copy_from_slice(&max_strength.to_le_bytes());
-    character.raw[Character::CURRENT_STRENGTH..Character::CURRENT_STRENGTH + 2]
-        .copy_from_slice(&current_strength.to_le_bytes());
-    character.raw[Character::BATTLE_HP] = hp;
-    character.raw[Character::BATTLE_SKILL] = attack;
-    character.raw[Character::BATTLE_DEFENCE] = defence;
-}
-
+/// An army battle on the ported engine (the party against Melehan's army
+/// in EXAMPLE.SAV) plays to an end, returns to the map and keeps its
+/// casualties in the save.
 #[test]
-fn battle_runs_multiple_rounds_and_returns_to_map_with_casualties() {
-    let mut runtime = Runtime::headless(Vec::new(), 0);
-    {
-        let state = &mut runtime.session_mut().state;
-        configure_battle_character(state, 0, "Constantine", 100, 100, 5, 100, 5);
-        configure_battle_character(state, 1, "Bedivere", 80, 80, 4, 80, 4);
-        configure_battle_character(state, 70, "Melehan", 1, 1, 1, 5, 1);
-        configure_battle_character(state, 71, "soldier", 50, 50, 2, 8, 1);
-    }
-
-    assert!(runtime.start_battle_with_seed(&[0, 1], &[70, 71], 5));
+fn battle_runs_and_returns_to_map_with_casualties() {
+    let Some(mut runtime) = example_runtime() else {
+        return;
+    };
+    assert!(runtime.start_demo_battle());
     assert_eq!(runtime.screen(), Screen::Battle);
-    let mut rounds = 0;
-    while runtime.screen() == Screen::Battle && rounds < 40 {
-        runtime.handle_key(Key::Confirm);
-        rounds += 1;
-    }
-    assert!(rounds >= 2, "battle should need more than one pass");
-    assert_eq!(runtime.last_battle_outcome(), Some(BattleOutcome::Victory));
+    let battle = runtime.battle().expect("battle open");
+    let ids: Vec<usize> = battle.units(0).iter().chain(&battle.units(1)).map(|u| usize::from(u.0) - 1).collect();
+    assert_eq!(battle.sprites().len(), ids.len(), "one token per unit");
+    let strength = |r: &Runtime| -> Vec<u16> { ids.iter().map(|&i| r.session().state.characters[i].current_strength()).collect() };
+    let before = strength(&runtime);
+    let events = runtime.finish_battle_now();
+    assert!(events.iter().any(|e| matches!(e, RuntimeEvent::BattleEnded(_))), "battle ended");
     assert_eq!(runtime.screen(), Screen::Map);
-    assert_eq!(runtime.state_code(), -1);
-
-    let foe_strength = runtime.session().state.characters[71].current_strength();
-    assert!(foe_strength < 50, "battle casualties were not persisted");
+    assert!(runtime.last_battle_outcome().is_some());
+    let after = strength(&runtime);
+    eprintln!("strength {before:?} -> {after:?}");
+    assert_ne!(before, after, "casualties were not kept");
 
     let temp = std::env::temp_dir().join(format!("soe-battle-{}", std::process::id()));
     std::fs::create_dir_all(&temp).unwrap();
     runtime.session().save_to(&temp, "BATTLE.SAV").unwrap();
     let saved = std::fs::read(temp.join("BATTLE.SAV")).unwrap();
     let state = GameState::parse(&saved).unwrap();
-    assert_eq!(state.characters[71].current_strength(), foe_strength);
+    let kept: Vec<u16> = ids.iter().map(|&i| state.characters[i].current_strength()).collect();
+    assert_eq!(kept, after);
     std::fs::remove_dir_all(&temp).ok();
 }
 
@@ -198,30 +173,21 @@ fn demo_battle_starts_from_a_real_save() {
     assert!(runtime.start_demo_battle(), "no armies were selected");
     assert_eq!(runtime.screen(), Screen::Battle);
     let battle = runtime.battle().expect("battle open");
-    assert!(!battle.player.is_empty());
-    assert!(!battle.foe.is_empty());
-    assert_eq!(battle.round, 0);
+    assert!(!battle.units(0).is_empty());
+    assert!(!battle.units(1).is_empty());
 }
 
+/// Esc gives the "Ignore" order: the battle is fought off screen at once.
 #[test]
-fn withdrawing_from_battle_returns_to_map() {
-    let mut runtime = Runtime::headless(Vec::new(), 0);
-    {
-        let state = &mut runtime.session_mut().state;
-        configure_battle_character(state, 0, "Constantine", 100, 100, 5, 50, 5);
-        configure_battle_character(state, 70, "soldier", 50, 50, 2, 8, 1);
-    }
-    assert!(runtime.start_battle_with_seed(&[0], &[70], 9));
+fn ignoring_a_battle_fights_it_off_screen() {
+    let Some(mut runtime) = example_runtime() else {
+        return;
+    };
+    assert!(runtime.start_battle_with_seed(&[0, 5, 49], &[58, 59, 60], 9));
     runtime.handle_key(Key::Cancel);
-    assert_eq!(
-        runtime.last_battle_outcome(),
-        Some(BattleOutcome::Withdrawn)
-    );
+    let events = runtime.finish_battle_now();
+    assert!(events.iter().any(|e| matches!(e, RuntimeEvent::BattleEnded(_))));
     assert_eq!(runtime.screen(), Screen::Map);
-    assert_eq!(
-        runtime.session().state.characters[0].current_strength(),
-        100
-    );
 }
 
 fn game_dir() -> &'static Path {

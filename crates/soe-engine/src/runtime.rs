@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use soe_video::{LOGICAL_WIDTH, PlanarImage};
 
-use crate::battle::{Battle, BattleOutcome, Order};
+use crate::army::{ArmyBattle, ArmyOrder};
+use crate::battle::BattleOutcome;
 use crate::economy::InventoryEntry;
 use crate::encounter::EncounterDialog;
 use crate::fight::{FightButton, FightSetup};
@@ -212,7 +213,10 @@ pub struct Runtime {
     target_action: usize,
     selected_character: usize,
     target_character: usize,
-    battle: Option<Battle>,
+    battle: Option<ArmyBattle>,
+    battle_accum: Duration,
+    /// Side-one slot the order goes to.
+    battle_unit: usize,
     battle_order_index: usize,
     last_battle_outcome: Option<BattleOutcome>,
     shop_index: usize,
@@ -302,6 +306,8 @@ impl Runtime {
             selected_character,
             target_character: selected_character,
             battle: None,
+            battle_accum: Duration::ZERO,
+            battle_unit: 0,
             battle_order_index: 0,
             last_battle_outcome: None,
             shop_index: 0,
@@ -569,7 +575,7 @@ impl Runtime {
     }
 
     #[must_use]
-    pub fn battle(&self) -> Option<&Battle> {
+    pub fn battle(&self) -> Option<&ArmyBattle> {
         self.battle.as_ref()
     }
 
@@ -578,12 +584,16 @@ impl Runtime {
         self.battle_order_index
     }
 
+    /// The side-one unit orders go to.
+    #[must_use]
+    pub const fn battle_unit(&self) -> usize {
+        self.battle_unit
+    }
+
     /// Orders shown by the battle screen.
     #[must_use]
-    pub fn battle_orders(&self) -> &'static [Order] {
-        self.battle
-            .as_ref()
-            .map_or(&crate::battle::BATTLE_ORDERS, Battle::orders)
+    pub fn battle_orders(&self) -> &'static [ArmyOrder] {
+        &ArmyOrder::ALL
     }
 
     #[must_use]
@@ -1213,12 +1223,54 @@ impl Runtime {
     }
 
     /// Start a battle with an explicit RNG seed for reproducible tests.
+    /// The sides are save-state indices (character id - 1), leaders first.
+    /// The battle runs on the ported engine ([`ArmyBattle`]) over the live
+    /// map's DGROUP, or the executable's with the save laid over it.
     pub fn start_battle_with_seed(&mut self, player: &[usize], foe: &[usize], seed: u32) -> bool {
-        let Some(battle) = Battle::from_state(&self.session.state, player, foe, seed) else {
+        let ds = match (self.mapsim.as_ref(), self.session.dgroup()) {
+            (Some(sim), _) => Some(sim.ds().to_vec()),
+            (None, Some(ds)) => {
+                let mut ds = ds.to_vec();
+                let save = self.session.state.to_bytes();
+                ds[SAVE_IN_DS..SAVE_IN_DS + SAVE_SPAN].copy_from_slice(&save[..SAVE_SPAN]);
+                Some(ds)
+            }
+            _ => None,
+        };
+        let id = |i: &usize| u8::try_from(i + 1).ok().filter(|&id| id < 0x5d);
+        let mine: Vec<u8> = player.iter().filter_map(id).take(0x14).collect();
+        let theirs: Vec<u8> = foe.iter().filter_map(id).take(0x14).collect();
+        let Some(mut ds) = ds.filter(|_| !mine.is_empty() && !theirs.is_empty()) else {
             self.notice = "No army is ready for battle.".to_string();
             return false;
         };
+        ds[0x9dc3..0x9dc3 + 0x28].fill(0);
+        ds[0x9dc3..0x9dc3 + mine.len()].copy_from_slice(&mine);
+        ds[0x9dd7..0x9dd7 + theirs.len()].copy_from_slice(&theirs);
+        ds[0x9dac] = mine.len() as u8;
+        ds[0x9dad] = theirs.len() as u8;
+        ds[0x9dae] = mine[0];
+        ds[0x9db0] = theirs[0];
+        ds[0x9c4e] = mine[0];
+        ds[0x9c4f] = theirs[0];
+        // FUN_20b5_2a30: an army battle (0x10), plus 8 when both leaders
+        // are on the same side of the 0x200 (Round Table) flag.
+        let flags = |ds: &[u8], id: u8| {
+            let at = 0x2c74 + usize::from(id) * 0x38;
+            u16::from_le_bytes([ds[at], ds[at + 1]])
+        };
+        let mut mode: u16 = 0x10;
+        if (flags(&ds, mine[0]) ^ flags(&ds, theirs[0])) & 0x200 == 0 {
+            mode |= 8;
+        }
+        ds[0x9c56..0x9c58].copy_from_slice(&mode.to_le_bytes());
+        // The field image follows the terrain under side one's leader
+        // (FUN_15b8_1b1b, DS:2B5C); until the terrain is passed in, class 0
+        // gives the default field, 0x26C.
+        let battle = ArmyBattle::start(&ds, self.session.resources_mut(), 0, seed);
         self.battle = Some(battle);
+        self.battle_accum = Duration::ZERO;
+        self.battle_unit = 0;
         self.battle_order_index = 0;
         self.last_battle_outcome = None;
         self.notice.clear();
@@ -1312,73 +1364,80 @@ impl Runtime {
     }
 
     fn handle_battle_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
-        let Some(order_count) = self.battle.as_ref().map(|battle| battle.orders().len()) else {
+        let Some(battle) = self.battle.as_mut() else {
             self.screen = Screen::Room;
             return vec![RuntimeEvent::ScreenChanged(Screen::Room)];
         };
-        if order_count == 0 {
-            return Vec::new();
-        }
+        let orders = ArmyOrder::ALL.len();
+        let units = battle.units(0).len().max(1);
         match key {
-            Key::Up | Key::Left => {
-                self.battle_order_index = (self.battle_order_index + order_count - 1) % order_count;
-                Vec::new()
-            }
-            Key::Down | Key::Right => {
-                self.battle_order_index = (self.battle_order_index + 1) % order_count;
-                Vec::new()
-            }
-            Key::Confirm | Key::Space | Key::Cancel => {
-                let order = if key == Key::Cancel {
-                    Order::Retreat
-                } else {
-                    let Some(battle) = self.battle.as_ref() else {
-                        return Vec::new();
-                    };
-                    battle.orders()[self.battle_order_index.min(order_count - 1)]
-                };
-                let finished = {
-                    let Some(battle) = self.battle.as_mut() else {
-                        return Vec::new();
-                    };
-                    match order {
-                        Order::Retreat | Order::Withdraw => battle.withdraw(),
-                        Order::Automatic => {
-                            battle.set_player_order(Order::Engage);
-                            battle.auto_resolve();
-                        }
-                        Order::Ignore => {}
-                        _ => {
-                            battle.set_player_order(order);
-                            battle.resolve_round();
-                        }
-                    }
-                    battle.is_over()
-                };
-                if finished {
-                    let mut events = Vec::new();
-                    self.finish_battle(&mut events);
-                    events
-                } else {
-                    Vec::new()
+            Key::Up => self.battle_order_index = (self.battle_order_index + orders - 1) % orders,
+            Key::Down => self.battle_order_index = (self.battle_order_index + 1) % orders,
+            Key::Left => self.battle_unit = (self.battle_unit + units - 1) % units,
+            Key::Right => self.battle_unit = (self.battle_unit + 1) % units,
+            Key::Confirm | Key::Space => {
+                let order = ArmyOrder::ALL[self.battle_order_index.min(orders - 1)];
+                if !matches!(order, ArmyOrder::DoRound | ArmyOrder::Ignore) {
+                    battle.select(self.battle_unit);
                 }
+                battle.order(order);
             }
-            _ => Vec::new(),
+            Key::Cancel => battle.order(ArmyOrder::Ignore),
+            _ => {}
         }
+        Vec::new()
+    }
+
+    /// Run the battle's scene clock (60 Hz); close the battle once it is
+    /// over.
+    fn advance_battle(&mut self, delta: Duration) -> Vec<RuntimeEvent> {
+        self.battle_accum += delta;
+        let tick = Duration::from_micros(1_000_000 / u64::from(crate::army::battle::CLOCK_HZ));
+        let ticks = (self.battle_accum.as_micros() / tick.as_micros()).min(600) as u32;
+        self.battle_accum = self.battle_accum.saturating_sub(tick * ticks);
+        let Some(battle) = self.battle.as_mut() else {
+            return Vec::new();
+        };
+        battle.advance(ticks, self.session.resources_mut());
+        let mut events = Vec::new();
+        if battle.finished() {
+            self.finish_battle(&mut events);
+        }
+        events
+    }
+
+    /// Run the open battle to its end without waiting.
+    pub fn finish_battle_now(&mut self) -> Vec<RuntimeEvent> {
+        let mut events = Vec::new();
+        for _ in 0..36_000 {
+            events.extend(self.advance_battle(Duration::from_millis(100)));
+            if self.battle.is_none() {
+                break;
+            }
+        }
+        events
     }
 
     fn finish_battle(&mut self, events: &mut Vec<RuntimeEvent>) {
         let Some(battle) = self.battle.take() else {
             return;
         };
-        let outcome = battle.outcome.unwrap_or(BattleOutcome::Withdrawn);
-        battle.apply_to_state(&mut self.session.state);
-        self.last_battle_outcome = Some(outcome);
-        self.notice = match outcome {
-            BattleOutcome::Victory => "The foe is routed. The army returns to the map.".to_string(),
-            BattleOutcome::Defeat => "The army is routed and falls back to the map.".to_string(),
-            BattleOutcome::Withdrawn => "The army withdraws to the map.".to_string(),
+        // FUN_2449_1021: 2/4 side two broke, 1/3 side one; 0 when a death
+        // that raised a story event ended the battle.
+        let outcome = match battle.result() {
+            2 | 4 => BattleOutcome::Victory,
+            1 | 3 => BattleOutcome::Defeat,
+            _ => BattleOutcome::Withdrawn,
         };
+        // Keep the battle's character records (strength, deaths, map moves).
+        let mut bytes = self.session.state.to_bytes();
+        bytes[..SAVE_SPAN].copy_from_slice(&battle.ds()[SAVE_IN_DS..SAVE_IN_DS + SAVE_SPAN]);
+        if let Ok(state) = crate::save::GameState::parse(&bytes) {
+            self.session.state = state;
+        }
+        self.mapsim = None;
+        self.last_battle_outcome = Some(outcome);
+        self.notice = battle.notices.last().cloned().unwrap_or_default();
         self.battle_order_index = 0;
         self.screen = Screen::Map;
         self.state = LoopState::Playing;
@@ -1494,6 +1553,9 @@ impl Runtime {
             LoopState::Playing => {
                 if matches!(self.screen, Screen::Map | Screen::Travel) {
                     events.extend(self.advance_map(delta));
+                }
+                if self.screen == Screen::Battle {
+                    events.extend(self.advance_battle(delta));
                 }
                 if self.screen == Screen::Duel {
                     // The scene clock runs at 60 Hz.
@@ -1907,11 +1969,9 @@ impl Runtime {
                 Vec::new()
             }
             Screen::Battle => {
-                let count = self.battle_orders().len();
-                if count > 0 {
-                    let row = usize::try_from((i32::from(y) - 18).max(0) / 10).unwrap_or(0);
-                    self.battle_order_index = row.min(count - 1);
-                }
+                // The order column: rows of DS:1E8A (10) pixels from y 5.
+                let row = usize::try_from((i32::from(y) - 5).max(0) / 10).unwrap_or(0);
+                self.battle_order_index = row.min(ArmyOrder::ALL.len() - 1);
                 Vec::new()
             }
             Screen::Target => {
@@ -2283,6 +2343,10 @@ impl Runtime {
         }
     }
 }
+
+/// Where the save's first 0x2360 bytes lie in DGROUP.
+const SAVE_IN_DS: usize = 0x2c5c;
+const SAVE_SPAN: usize = 0x2360;
 
 fn battle_seed() -> u32 {
     use std::time::{SystemTime, UNIX_EPOCH};

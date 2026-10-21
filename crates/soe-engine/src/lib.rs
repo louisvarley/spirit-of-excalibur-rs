@@ -49,13 +49,13 @@ pub mod smus;
 
 pub mod window;
 
-pub mod army;
-pub mod arrival;
-pub mod combat;
 pub mod duel;
+pub mod travel;
 pub mod encounter;
-pub mod fight;
 pub mod mapsim;
 pub mod names;
+pub mod arrival;
+pub mod fight;
+pub mod army;
+pub mod combat;
 pub mod script;
-pub mod travel;

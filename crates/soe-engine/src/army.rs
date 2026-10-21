@@ -920,5 +920,8 @@ pub fn fun_2449_134e_round(
     RoundEnd::Continue
 }
 
+pub mod battle;
+pub use battle::{ArmyBattle, ArmyOrder, ArmySprite};
+
 #[cfg(test)]
 mod tests;

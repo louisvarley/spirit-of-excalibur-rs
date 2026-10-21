@@ -71,6 +71,6 @@ window (default 640x400).
 The interaction loop is playable: room character selection opens the action
 menu, Talk resolves the event table to a `HINT.RES` line, Give/Drop/Pickup/Use
 move live object instances, and join/plea dialogue records offer choices.
-The army battle is playable with orders, rounds, casualties and return to the
-map. Remaining gaps are per-scene event visibility, encounter-table setup,
+The army battle runs on the ported engine (`FUN_2449_134e`): tokens advance
+on the field, rounds, casualties and return to the map (see `COMBAT.md`). Remaining gaps are per-scene event visibility, encounter-table setup,
 exact AI/edge cases, per-scene music cues and driver-exact audio.

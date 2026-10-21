@@ -266,6 +266,27 @@ impl Session {
         frame
     }
 
+    /// The army battle's field (image at (0x90, 0x50), as `FUN_20b5_085b`
+    /// draws it) and its tokens over `frame`. The battle keeps the regional
+    /// map's palette (the original's DAC is unchanged from the map).
+    #[must_use]
+    pub fn compose_army(&self, mut frame: soe_video::IndexedFrame, battle: &crate::army::ArmyBattle) -> soe_video::IndexedFrame {
+        frame.palette = self.palettes.regional_map();
+        if let Some(field) = battle.field_image().and_then(|d| decode_planar(d).ok()) {
+            crate::room::blit_remapped(&mut frame, &field, 0x90, 0x50, false, None);
+        }
+        for sprite in battle.sprites() {
+            let image = battle
+                .bank(sprite.resource)
+                .and_then(|data| FrameBank::parse(data).ok())
+                .and_then(|bank| bank.frame_image(usize::from(sprite.frame & 0x7f)));
+            if let Some(image) = image {
+                crate::room::blit_remapped(&mut frame, &image, i32::from(sprite.x), i32::from(sprite.y), sprite.mirrored, None);
+            }
+        }
+        frame
+    }
+
     /// Advance every animation by one frame and re-render.
     pub fn advance_animation_frame(&mut self) {
         self.animation_frame = self.animation_frame.wrapping_add(1);

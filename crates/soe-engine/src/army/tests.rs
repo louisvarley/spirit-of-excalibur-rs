@@ -347,3 +347,46 @@ fn matches_original_army_calls() {
     }
     eprintln!("army calls matched: {done:?}");
 }
+
+/// Constantine, Bellengerus and his soldiers against Andulf's army, set up
+/// as `tests/oracle/army_watch.py` does: the battle plays to an end.
+#[test]
+fn army_battle_runs_to_an_end() {
+    let game = std::path::Path::new("../../game");
+    let exe = std::path::Path::new("../../ghidra/EXCAL_UNPACKED.EXE");
+    if !game.join("EPISODE1.DAT").exists() || !exe.exists() {
+        eprintln!("SKIP: game data absent");
+        return;
+    }
+    let mut session = crate::session::Session::load(game, exe, 1).unwrap();
+    let mut ds = session.dgroup().unwrap().to_vec();
+    let save = session.state.to_bytes();
+    ds[0x2c5c..0x2c5c + 0x2360].copy_from_slice(&save[..0x2360]);
+    let (side1, side2) = ([1u8, 6, 50], [56u8, 57, 58]);
+    ds[LIST..LIST + 0x28].fill(0);
+    ds[LIST..LIST + 3].copy_from_slice(&side1);
+    ds[LIST + 0x14..LIST + 0x17].copy_from_slice(&side2);
+    ds[COUNT1] = 3;
+    ds[COUNT2] = 3;
+    ds[0x9dae] = 1;
+    ds[0x9db0] = 56;
+    set_word(&mut ds, MODE, 0x10);
+    let (x, y) = (word(&ds, rec(1) + 0x0e), word(&ds, rec(1) + 0x10));
+    for id in side2 {
+        set_word(&mut ds, rec(id) + 0x0e, x + 8);
+        set_word(&mut ds, rec(id) + 0x10, y);
+    }
+    let mut battle = ArmyBattle::start(&ds, session.resources_mut(), 1, 7);
+    assert_eq!(battle.sprites().len(), 6, "one token per unit");
+    let mut seconds = 0;
+    while !battle.finished() && seconds < 600 {
+        battle.advance(battle::CLOCK_HZ, session.resources_mut());
+        seconds += 1;
+    }
+    for m in &battle.messages {
+        eprintln!("{m}");
+    }
+    eprintln!("after {seconds}s: result {} units {:?} / {:?}", battle.result(), battle.units(0), battle.units(1));
+    assert!(battle.finished(), "the battle ended");
+    assert!(battle.messages.iter().any(|m| m.contains("killed") || m.contains("wounded")), "blows were exchanged");
+}
