@@ -190,7 +190,11 @@ pub fn fun_1b06_0007(
         e.set_w(WAKE, 0);
     }
     let follow = if e.0[FOLLOW] != 0 { world.follow(e.0[FOLLOW]) } else { None };
-    let mut budget = (u16::from(e.0[SPEED] & 0xf) << (tables.speed_shift & 0x1f)).wrapping_add(e.w(CARRY));
+    // SHL AX,CL: the count is masked to 5 bits and shifts of 16+ give 0.
+    let mut budget = u16::from(e.0[SPEED] & 0xf)
+        .checked_shl(u32::from(tables.speed_shift & 0x1f))
+        .unwrap_or(0)
+        .wrapping_add(e.w(CARRY));
 
     loop {
         // 1b06:00c6
