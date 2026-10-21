@@ -7,6 +7,10 @@
 
 pub mod save;
 
+pub mod economy;
+
+pub mod interaction;
+
 pub mod scene;
 
 pub mod ani;

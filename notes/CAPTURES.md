@@ -13,7 +13,15 @@ User-provided references (do not commit the binaries/screenshots).
 - `006/007`: battle screen with Round Table/Foes columns.
 - `008`: post-battle dialogue over the regional map.
 - `009`: save/load menu over the regional map.
-- `010`: army/status table over the map.
+- `010`, `stats-on-party.png`: army/status table over the map. Columns are
+  `NAME hp hth MV [weapon] COM ARM NOB FTH`; equipment is supplied by carried
+  object instances, not by extra character fields.
+- `options in room.png`: the 12-action room menu (Pickup, Drop, Talk, Use,
+  Search, Trade, Request, Magic, Seize, Give, Bribe, Attack).
+- `new_excal_003.png`: the Give item list (`WHAT SHALL CONSTANTINE GIVE TO SIR
+  BELLENGERUS?`), showing one carried item per line.
+- `select.png` / `magic no magic available.png`: target selection and the
+  original "has no magic prepared" message.
 
 These confirm:
 
@@ -68,8 +76,12 @@ A later capture was taken with an NPC dialogue open in scene 5.
 - Live NPC character records are in memory around `0x2E800`:
   `Palomides`, `Hebes`, `Lionel`, ... with the same 0x38-byte character shape
   as the save file.
-- This confirms the dialogue text and NPC records are resident, but the
-  per-scene event/choice table that selects the line is still not mapped.
+- The per-scene trigger table is now mapped: `EPISODE*.DAT`/`*.SAV` file
+  `0x1A4F` holds 80 six-byte `{actor, relation, flags, line}` records, and
+  `line` is a 1-based `HINT.RES` record id. `soe-engine::interaction` resolves
+  Talk through those records. The saved `save-state-2.sav` capture itself is
+  user-supplied and not committed; regression fixtures use `EXAMPLE.SAV` and
+  the provided `D1.SAV`/`TRY1.SAV` room saves.
 
 FRML was already solved from the earlier room capture, so no further animation
 state is needed.

@@ -1,6 +1,8 @@
 # Save-state layout (`EPISODE*.DAT`, `*.SAV`)
 
-Status: **file layout verified; DGROUP mapping partly unverified**.
+Status: **file layout verified; character stats, object definitions, live
+instances, money, trade and spell records decoded from the save files and the
+`1ba8`/`2b79` routines.** Remaining unknown bits are listed at the end.
 
 Every `EPISODE*.DAT` and `*.SAV` is 9,077 bytes (`0x2375`). Little-endian.
 
@@ -9,78 +11,18 @@ Every `EPISODE*.DAT` and `*.SAV` is 9,077 bytes (`0x2375`). Little-endian.
 | file offset | size | contents |
 |---|---:|---|
 | `0x0000` | `0x30` | header / world flags |
-| `0x0030` | 64 x `0x38` | character records (ends `0x0E30`) |
-| `0x1473` | 49 x `0x19` | location records (ends `0x195C`) |
-| `0x1C4A` | 35 x `0x1B` | item records (ends `0x1FFB`) |
-| `0x1FFB` | 6 x `0x1B` | spell records (ends `0x209D`) |
-| `0x2175` | — | event/flag table (per prior notes; unverified) |
-| `0x22C9` | 50 x 3 | relationships `(A, B, value)` (per prior notes) |
+| `0x0030` | 92 x `0x38` | character/NPC records (ends `0x1450`) |
+| `0x1A4F` | 80 x `0x06` | event/dialogue triggers (ends `0x1C2F`) |
+| `0x1C4A` | 49 x `0x1B` | object definitions (items and spells, ends `0x2175`) |
+| `0x2175` | 85 x `0x04` | live object instances (ends `0x22C9`) |
+| `0x22C9` | 50 x `0x03` | relationships `(A, B, value)` (ends `0x235F`) |
+| `0x235F` | `0x16` | 22-byte tail |
 
-Verified by reading `EPISODE1.DAT`:
+Names in `EPISODE1.DAT` confirm the tables: characters 0/1 are
+`Constantine`/`Bedivere`, location 0 is `Colchester`, object 1 is
+`gold besant`, and object 36 is `Repletion`.
 
-- character 0 at `0x30`: name at `+0x0A` = `Constantine`
-- character 1 at `0x68`: `Bedivere`
-- location 0 at `0x1473`: `Colchester`, then `Gloucester`, `Lincoln`, `York`, `London`
-- item 0 at `0x1C4A`: `gold besant`, then `knife`, `broadsword`, `runic blade`, `Excalibur`
-- spell 0 at `0x1FFB`: `Repletion`, `Charm`, `Summon Undine`, `Heal`, `Defend`, `Shield`
-
-## DGROUP mapping (prior claim — not fully verified)
-
-Prior notes say the loader copies:
-
-| file range | DGROUP |
-|---|---|
-| `0x0000..0x0015` (22 bytes) | `0x4FBF` |
-| `0x0016..end` (9,055 bytes) | `0x2C5C..0x4FBA` |
-
-Arithmetic check: `0x2C5C + 0x235F = 0x4FBB`, one byte past the stated
-`0x4FBA`, and the 22-byte block overlaps that range by 0x16. The prior notes
-themselves flag a 0x16 contradiction. The loader image offset is claimed at
-`0xAAAD`; we have not yet matched every byte against DGROUP, so the mapping is
-**unverified**.
-
-Consequences if the claim is right:
-
-- character 0 file `0x30` -> DGROUP `0x2C8C`; names at `0x2C96`; the code's
-  `0x2C5E` base is one record earlier (1-based indexing).
-- location 0 file `0x1473` -> DGROUP `0x40CF` (the runtime table starts one
-  0x19-byte header entry earlier at `0x40B6`).
-- item 0 file `0x1C4A` -> DGROUP `0x48A6`.
-- flag/event table file `0x2175` -> DGROUP `0x4DD1`.
-- relationships file `0x22C9` -> DGROUP `0x4F25`.
-
-## Character record `0x38`
-
-Stats at `+0x00..+0x09`, 12-byte NUL-padded name at `+0x0A`, home/start
-positions at `+0x16`/`+0x1A`, sprite descriptor at `+0x1E`, status at `+0x22`,
-save/world X/Y at `+0x28`/`+0x2A`/`+0x2C`, remaining runtime state at `+0x2E`.
-Character indices are 1-based in the original.
-
-## Location `0x19`
-
-Name 18 bytes, world X/Y at `+0x12`/`+0x14` (four times map pixels), type at
-`+0x16`, flags at `+0x18`.
-
-## Item/spell `0x1B`
-
-Name 18 bytes, kind at `+0x12`, subtype `+0x13`, power `+0x14`, effect fields
-`+0x15..+0x1A`.
-
-## Flags / relationships
-
-The flag table at `0x2175` and 50 x 3 relationship records at `0x22C9` come from
-the prior notes. They are **unverified** until the loader mapping is confirmed
-against DGROUP via the oracle.
-
-
-## Follow-up 10 cross-check
-
-File layout above is **confirmed** by names in `EPISODE1.DAT` (characters
-`Constantine`/`Bedivere`, locations `Colchester`/`Gloucester`, items `gold
-besant`/`knife`, spells `Repletion`/`Charm`). Character name field is at
-record `+0x0A` (12 bytes).
-
-### Corrected DGROUP mapping (CONFIRMED by loader arithmetic)
+## DGROUP mapping (confirmed)
 
 The loader is `FUN_1a51_059d` (image offset `0xAAAD`). It copies:
 
@@ -89,10 +31,104 @@ The loader is `FUN_1a51_059d` (image offset `0xAAAD`). It copies:
 | `0x0000..0x235E` | 9055 | `0x2C5C..0x4FBA` |
 | `0x235F..0x2374` | 22 | `0x4FBF..0x4FD4` |
 
-The 22-byte block is the **file tail**, not the head. The prior 0x16
-contradiction came from treating it as a file prefix. This makes character 0
-(file `0x30`) land at DS `0x2C8C`, name at `0x2C96`, and matches the code's
-1-based `0x2C5E + index*0x38` naming (`index 1 -> 0x2C96`).
+So file `0x1C4A` maps to DS `0x48A6`, and the original's 1-based object
+pointer `0x488B + index*0x1B` points at object 1 for `index == 1`. The
+character pointer `0x2C5E + index*0x38` points at the **name** field of
+character `index` (character 1 -> DS `0x2C96`), which is why the code reads
+`+0x28` for gold while the file record stores gold at `+0x32`.
 
-`soe-engine::save::GameState` implements the loader and `dgroup_image()`; its
-test checks `Constantine` at DS `0x2C96` and the 22-byte tail at `0x4FBF`.
+## Character record `0x38`
+
+| record offset | contents |
+|---|---|
+| `+0x00` | health / current HP |
+| `+0x01` | hits (max/health pool; status header `hth`) |
+| `+0x02` | movement (`MV`) |
+| `+0x03` | weapon/readied item index (status sword column) |
+| `+0x04` | combat (`COM`) |
+| `+0x05` | armour (`ARM`) |
+| `+0x06` | nobility (`NOB`) |
+| `+0x07` | faith (`FTH`) |
+| `+0x08` | magic skill |
+| `+0x09` | level/rank |
+| `+0x0A` | 12-byte NUL-padded name |
+| `+0x20` | runtime presence flags (`+0x16` in runtime coordinates) |
+| `+0x32` | party purse, little-endian word (`+0x28` in runtime coordinates) |
+| rest | sprite, map coordinates, status and runtime fields |
+
+The status screenshot columns are `hp hth MV [weapon] COM ARM NOB FTH`.
+Equipment is **not** stored in the character record: it is the set of carried
+object instances with the equipped bit set (below). Effective combat adds the
+equipped weapon's power; effective armour adds the equipped armour effects.
+
+## Object definition `0x1B`
+
+There is one contiguous 49-record table. Items and prepared spells share it;
+a spell is simply an object with `kind == 0` and `subtype == 0`. Later saves
+(`D3.SAV`, `TRY1.SAV`) use more than the first six spell-looking slots, so the
+old "35 items + 6 spells" split was wrong.
+
+| definition offset | contents |
+|---|---|
+| `+0x00` | 18-byte NUL-padded name |
+| `+0x12` | kind (see below) |
+| `+0x13` | subtype: `3` item, `0` spell |
+| `+0x14` | power / weapon damage / potion strength |
+| `+0x15` | item class/effect group |
+| `+0x16` | effect magnitude, also used as shop value |
+| `+0x17` | effect handler id (`44` heal, `43` vitality, `45` combat, `46` armour, `64` charm) |
+| `+0x18` | 16-bit definition flags (bit `0x20` enchanted, etc.) |
+| `+0x1A` | spell component bitmask |
+
+Verified kinds: `49` money, `51` key, `52` map, `55..=57` swords/knives,
+`58` shield, `59` helm, `60..=61` body armour, `62` gauntlets, `33/34`
+potions, `35` ingredients, `39..=47` miscellaneous/quest objects, `0` spell.
+
+Definition 1 is always `gold besant`; its instance byte `+0x02` is the amount
+when the original creates a money pickup, while the authoritative party purse
+is character `+0x32`.
+
+## Live object instance `0x04`
+
+| instance offset | contents |
+|---|---|
+| `+0x00` | object definition index, 1-based (`0` = empty slot) |
+| `+0x01` | owner character index, 1-based (`0` = ground/scenery) |
+| `+0x02` | scene id for normal objects; amount for the money record |
+| `+0x03` | flags |
+
+Verified flag values:
+
+| flags | meaning |
+|---:|---|
+| `0x18` | carried in the owner's inventory |
+| `0x19` | carried and equipped |
+| `0x04` | lying in a scene / container |
+| `0x01`, `0x02` | fixed scenery or shop/quest placement |
+| `0x0a`, `0x0b` | merchant/stock placement |
+| `0x0d` | money placement |
+
+`FUN_1ba8_04fd` counts carried instances (`flags == 0x18`), `FUN_1ba8_078f`
+lists a character's inventory, and `FUN_1ba8_0431` transfers an item by
+rewriting `+0x01` (or moves the gold word between characters when the object
+is definition 1). `FUN_1ba8_01ff` finds/creates the money instance and
+`FUN_1ba8_1005` implements trade using these lists and definition `+0x16` as
+the price. `FUN_1ba8_44f1` -> `FUN_2b79_0a7f` selects a prepared spell;
+`FUN_1ba8_2e27` consumes the selected spell and applies its effect.
+
+## Events / relationships
+
+`0x1A4F` holds 80 six-byte triggers `{actor, relation, flags, line}`. `actor`
+and `line` are 1-based character and `HINT.RES` record indices; bits `0x70`
+are priority, `0x2000` a plea and `0x4000` a join offer. `0x22C9` keeps the
+50 three-byte relationships.
+
+## Unknown / still approximate
+
+- Some definition flag bits (`0x20`, `0x40`, `0x80`, high word bits) are not
+  individually named yet; only equipment, magical and component behaviour is
+  used by the port.
+- Instance flags `0x01`/`0x02`/`0x0a`/`0x0b` are observed placements but their
+  exact original semantics (fixed scenery vs. merchant stock) are inferred.
+- The stat names `hits`, `nobility` and `level` follow the status table and
+  code use; the original manual wording may differ.

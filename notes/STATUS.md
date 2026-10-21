@@ -35,10 +35,16 @@ Updated: M3 main-loop runtime port.
   travel).
 - Main loop ported as `soe-engine::runtime::Runtime`: all screens are states,
   the original `-5`/`-4`/`-3`/`-2`/`-1` loop words are modelled, and
-  room/map/status/story/travel/save/pause/action/item/target transitions and
-  input routing live in the engine. `soe-app` drives `Runtime` and only
-  presents frames/effects.
-- State-transition unit tests plus an integration test over a real episode.
+  room/map/status/story/travel/save/pause/action/item/spell/shop/target/
+  dialogue transitions and input routing live in the engine. `soe-app` drives
+  `Runtime` and only presents frames/effects.
+- Save decoding extended to the full 92 character records, 80 dialogue/event
+  triggers, 49 object definitions and 85 live object instances.
+- Inventory/economy/magic implementation: use, drop, pickup, give, equip,
+  purse transfer, buy/sell trade, prepared-spell selection and spell effects.
+  Status/items/spells/trade are live interactive screens.
+- State-transition unit tests, economy tests for every action, interaction
+  tests, plus integration tests over real saves/episodes.
 
 ## M1 remaining
 
@@ -64,19 +70,18 @@ Updated: M3 main-loop runtime port.
 
 - Travel is list-based; graphical regional map/camera/current-location tracking
   remains.
-- Events/NPCs/dialogue choices: story reader only; event tables not reversed.
-- Inventory/economy/magic/trade: read-only status; item/stat layouts not
-  reversed.
+- Events/NPCs: event table, Talk target and dialogue choices implemented.
+  Per-scene trigger visibility and some event side effects remain open.
+- Inventory/economy/magic/trade: implemented; exact price bargaining and a few
+  object flag bits remain approximate.
 - Combat: not started; battle tables/formulas not reversed.
 - Audio: SMUS parser + OPL2/cpal map music implemented; per-scene cues and
   driver-exact instruments remain.
 - Packaging: release script and clean distribution folder implemented.
-- Action menu and item-selection panel implemented (UI only).
 - Battle unit record layout and battle UI code located; resolution pending.
 
 ## Next
 
-1. Reverse event/NPC tables and dialogue-choice actions.
-2. Reverse character/item/equipment layout and trade/spell actions.
-3. Reverse battle setup/round tables and outcomes.
-4. Per-scene audio cues, packaging polish, upscale.
+1. Finish per-scene event triggers and remaining dialogue side effects.
+2. Reverse battle setup/round tables and outcomes.
+3. Per-scene audio cues, packaging polish, upscale.

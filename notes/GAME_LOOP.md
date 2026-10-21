@@ -29,21 +29,26 @@ intro/room modes use `0`/`1`, travel/map interactions use `-3`, the
 game-lost path uses `-4`, and the post-combat return path uses `-5`.
 
 Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
-`Travel`, `Save`, `Pause`, `Action`, `Item`, `Target`, `GameLost`, `Quit`.
+`Travel`, `Save`, `Pause`, `Action`, `Item`, `Spell`, `Shop`, `Target`,
+`Dialogue`, `GameLost`, `Quit`.
 
 ### Transitions
 
 - `Room` -> `Map` with `M`; `Map` -> `Room` with `M`, `Esc` or `Enter`.
-- `Room` -> `Status` with `I`; `Status` -> `Room` with `I`, `Esc` or `Enter`.
+- `Room` -> `Status` with `I`; up/down selects a knight and `Enter` opens
+  their live inventory. `I`/`Esc` closes. The panel decodes stats, purse, gear
+  and prepared spells from the save state.
 - `Room` -> `Story` with `H`; arrows/space/click page, `H`/`Esc` closes.
 - `Room` -> `Travel` with `T`; up/down selects, `Enter` enters the location's
   scene through `-3`, then returns to `Room` when the fade completes.
 - `Room` -> `Save` with `S`; up/down selects, `Enter` loads, `F5` quick-saves,
   `S`/`Esc` closes. Loading replaces the session and returns to `Room`.
 - `Room` -> `Pause` with `P`; any key resumes the room.
-- `Room` -> `Action` with `A`/`Enter`; actions Talk/Seize go to `Target`,
-  Pickup/Drop/Use go to `Item`. Target Talk opens `Story`, Target Give opens
-  `Item`, and cancel/confirm returns to `Room`.
+- `Room` -> `Action` with `A`/`Enter`; Talk/Trade/Give go to `Target`,
+  Pickup/Drop/Use go to `Item`, Magic opens `Spell`. Target Talk opens
+  `Dialogue` (or the chronicle when no event exists), Target Trade opens
+  `Shop`, Target Give opens `Item`. Item/spell/trade rows act on the live
+  save state; cancel returns to `Room`.
 - `Room` left/right arrows or clicks change scene; `Space` advances one
   animation frame. Animation ticks only run in `Room` while `-1`.
 - `GameLost` confirm requests quit. `return_to_menu()` enters `-5`; the next

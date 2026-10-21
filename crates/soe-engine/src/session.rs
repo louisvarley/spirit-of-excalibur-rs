@@ -266,6 +266,42 @@ impl Session {
         true
     }
 
+    /// Topmost scene object whose opaque pixel covers `(x, y)`.
+    ///
+    /// Draw order is the scene object order, so the last match wins. This is
+    /// the hit test used to select room characters; animation objects use
+    /// their current frame.
+    #[must_use]
+    pub fn object_at(&self, x: i16, y: i16) -> Option<usize> {
+        let px = i32::from(x);
+        let py = i32::from(y);
+        for (index, object) in self.scene.objects.iter().enumerate().rev() {
+            let image = self.static_images.get(&object.resource_id).or_else(|| {
+                self.animations
+                    .get(&object.resource_id)
+                    .and_then(|frames| frames.get(self.animation_frame % frames.len()))
+            });
+            let Some(image) = image else {
+                continue;
+            };
+            let width = i32::from(image.width);
+            let sx = px - i32::from(object.x);
+            let sy = py - i32::from(object.y);
+            if sx < 0 || sy < 0 || sx >= width || sy >= i32::from(image.height) {
+                continue;
+            }
+            let source_x = if object.flags & 1 != 0 {
+                width - 1 - sx
+            } else {
+                sx
+            };
+            if image.indices[(sy * width + source_x) as usize] != 0 {
+                return Some(index);
+            }
+        }
+        None
+    }
+
     #[must_use]
     pub fn palettes(&self) -> &PaletteSet {
         &self.palettes

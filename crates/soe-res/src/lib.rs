@@ -204,8 +204,6 @@ impl ResFile {
     /// multiple type sections, so the longest consistent 12-byte run is used.
     #[must_use]
     pub fn records(&self) -> Vec<RecordMeta> {
-        let io = self.header.index_offset as usize;
-        let dir = &self.data[io..];
         let d4 = read_u32(&self.data, 0x10);
         let d5 = read_u32(&self.data, 0x14);
         let six = d4 != 0
@@ -213,6 +211,23 @@ impl ResFile {
             && d5 >= d4.saturating_add(4)
             && d5 < MAX_REASONABLE_EXPANDED_SIZE;
         let payload_base = if six { 0x18usize } else { 0x14usize };
+        self.records_with_payload_base(payload_base, six, d5 as usize)
+    }
+
+    /// Directory records with an explicit payload base.
+    ///
+    /// `HINT.RES` is a five-dword container and its directory offsets are
+    /// relative to `0x14`; the generic heuristic above cannot distinguish it
+    /// from a six-dword file, so text callers use this entry point.
+    #[must_use]
+    pub fn records_with_payload_base(
+        &self,
+        payload_base: usize,
+        expanded: bool,
+        first_expanded_len: usize,
+    ) -> Vec<RecordMeta> {
+        let io = self.header.index_offset as usize;
+        let dir = &self.data[io..];
         let payload_len = io.saturating_sub(payload_base);
 
         let mut best: Vec<(u16, u32, u8, u32)> = Vec::new();
@@ -247,13 +262,13 @@ impl ResFile {
                 .copied()
                 .find(|&o| o > offset)
                 .unwrap_or(payload_len as u32);
-            let expanded = (six && offset == 0).then_some(d5 as usize);
+            let expanded_len = (expanded && offset == 0).then_some(first_expanded_len);
             out.push(RecordMeta {
                 offset: payload_base + offset as usize,
                 id,
                 record_index: id,
                 stored_len: end.saturating_sub(offset) as usize,
-                expanded_len: expanded,
+                expanded_len,
                 compressed: flags & 0x80 != 0,
                 header_len: 0,
                 flags,
@@ -261,6 +276,17 @@ impl ResFile {
             });
         }
         out
+    }
+
+    /// Records for `HINT.RES`.
+    ///
+    /// Despite the historical "five-dword" name, `HINT.RES` uses the same
+    /// six-dword layout as the other text archives: directory offsets are
+    /// relative to `0x18` and the first record's expanded length lives in the
+    /// dword at `0x14`.
+    #[must_use]
+    pub fn records_five_dword(&self) -> Vec<RecordMeta> {
+        self.records()
     }
 
     /// Stored payload bytes for a record (no decompression).

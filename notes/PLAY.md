@@ -36,6 +36,8 @@ The process needs the original game files; they remain git-ignored.
 | M | toggle the world-map screen |
 | H | open the story/hint chronicle (arrows/click page, H closes) |
 | A | room action menu (arrows select, Enter, A closes) |
+| Click a room character | select that character and open their action menu |
+| Enter in dialogue | close, or apply the highlighted choice |
 | T | travel list (up/down select, Enter go, T closes) |
 | S | save/load browser (Enter load, F5 quick-save, S close) |
 | P | pause / close the pause panel |
@@ -65,6 +67,8 @@ window (default 640x400).
 
 ## Scope
 
-This build does not yet implement combat, trade, dialogue choices, map travel,
-inventory, audio, or the save/load menu. It is a playable room/animation viewer,
-not a complete game.
+The interaction loop is playable: room character selection opens the action
+menu, Talk resolves the event table to a `HINT.RES` line, Give/Drop/Pickup/Use
+move live object instances, and join/plea dialogue records offer choices.
+Combat, per-scene event visibility and driver-exact audio remain open. This is
+not yet a complete game.

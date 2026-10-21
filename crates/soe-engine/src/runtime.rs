@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use soe_video::{IndexedFrame, LOGICAL_WIDTH, PlanarImage};
 
+use crate::economy::InventoryEntry;
+use crate::interaction::{Dialogue, character_name};
 use crate::session::Session;
 use crate::story::HintBook;
 
@@ -45,8 +47,14 @@ pub enum Screen {
     Action,
     /// Item selection panel.
     Item,
+    /// Prepared-spell selection panel.
+    Spell,
+    /// Buy/sell shop panel.
+    Shop,
     /// Target character selection panel.
     Target,
+    /// Dialogue/event text with optional choices.
+    Dialogue,
     /// `GAMELOST` screen (original loop state `-4`).
     GameLost,
     /// The loop has been asked to terminate.
@@ -68,7 +76,10 @@ impl Screen {
             Self::Pause => "PAUSED",
             Self::Action => "ACTIONS",
             Self::Item => "ITEMS",
+            Self::Spell => "SPELLS",
+            Self::Shop => "TRADE",
             Self::Target => "SELECT TARGET",
+            Self::Dialogue => "DIALOGUE",
             Self::GameLost => "GAME LOST",
             Self::Quit => "QUIT",
         }
@@ -175,6 +186,13 @@ pub struct Runtime {
     item_action: usize,
     target_index: usize,
     target_action: usize,
+    selected_character: usize,
+    target_character: usize,
+    shop_index: usize,
+    shop_sell: bool,
+    shop_seller: Option<usize>,
+    notice: String,
+    dialogue: Option<Dialogue>,
     transition_remaining: Option<Duration>,
     animation_accum: Duration,
 }
@@ -190,6 +208,7 @@ impl Runtime {
         exe: impl Into<PathBuf>,
     ) -> Self {
         let game_dir = game_dir.into();
+        let selected_character = session.state.default_character();
         let mut runtime = Self {
             scene_ids,
             scene_index,
@@ -210,6 +229,13 @@ impl Runtime {
             item_action: 0,
             target_index: 0,
             target_action: 0,
+            selected_character,
+            target_character: selected_character,
+            shop_index: 0,
+            shop_sell: false,
+            shop_seller: None,
+            notice: String::new(),
+            dialogue: None,
             transition_remaining: None,
             animation_accum: Duration::ZERO,
         };
@@ -332,6 +358,97 @@ impl Runtime {
     }
 
     #[must_use]
+    pub const fn selected_character(&self) -> usize {
+        self.selected_character
+    }
+
+    #[must_use]
+    pub const fn target_character(&self) -> usize {
+        self.target_character
+    }
+
+    #[must_use]
+    pub const fn shop_index(&self) -> usize {
+        self.shop_index
+    }
+
+    #[must_use]
+    pub const fn shop_sell(&self) -> bool {
+        self.shop_sell
+    }
+
+    #[must_use]
+    pub fn notice(&self) -> &str {
+        &self.notice
+    }
+
+    #[must_use]
+    pub fn dialogue(&self) -> Option<&Dialogue> {
+        self.dialogue.as_ref()
+    }
+
+    /// Display name of the character whose action menu is open.
+    #[must_use]
+    pub fn actor_name(&self) -> String {
+        character_name(&self.session.state, self.selected_character)
+    }
+
+    /// Characters selectable in the current room.
+    #[must_use]
+    pub fn room_characters(&self) -> Vec<usize> {
+        self.session.state.room_characters(self.selected_character)
+    }
+
+    /// Names shown by the target panel.
+    #[must_use]
+    pub fn target_names(&self) -> Vec<String> {
+        self.target_candidates()
+            .into_iter()
+            .map(|index| character_name(&self.session.state, index))
+            .collect()
+    }
+
+    /// Names shown by the active item panel.
+    #[must_use]
+    pub fn item_names(&self) -> Vec<String> {
+        self.item_entries()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
+    }
+
+    /// Rows shown by the active item panel.
+    #[must_use]
+    pub fn item_entries(&self) -> Vec<InventoryEntry> {
+        match self.item_action {
+            0 => self.session.state.ground_items(self.session.scene_id),
+            _ => self.session.state.inventory(self.selected_character),
+        }
+    }
+
+    #[must_use]
+    pub fn spell_entries(&self) -> Vec<InventoryEntry> {
+        self.session.state.spells(self.selected_character)
+    }
+
+    /// Rows shown by the trade panel. Selling lists the player's inventory;
+    /// buying lists merchant stock, falling back to the catalogue.
+    #[must_use]
+    pub fn shop_entries(&self) -> Vec<InventoryEntry> {
+        if self.shop_sell {
+            return self.session.state.inventory(self.selected_character);
+        }
+        let stock = self
+            .shop_seller
+            .map_or_else(Vec::new, |seller| self.session.state.shop_stock(seller));
+        if stock.is_empty() {
+            self.session.state.catalogue()
+        } else {
+            stock
+        }
+    }
+
+    #[must_use]
     pub const fn scene_index(&self) -> usize {
         self.scene_index
     }
@@ -392,6 +509,12 @@ impl Runtime {
             Screen::Item => {
                 self.open_item(0);
             }
+            Screen::Spell => {
+                self.open_spell();
+            }
+            Screen::Shop => {
+                self.open_shop(None);
+            }
             Screen::Target => {
                 self.open_target(0);
             }
@@ -407,6 +530,29 @@ impl Runtime {
         self.screen = Screen::Item;
         self.item_index = 0;
         self.item_action = action;
+        self.notice.clear();
+        self.clamp_item_index();
+    }
+
+    pub fn open_spell(&mut self) {
+        self.state = LoopState::Playing;
+        self.screen = Screen::Spell;
+        self.item_index = 0;
+        self.notice.clear();
+        self.clamp_item_index();
+    }
+
+    pub fn open_shop(&mut self, seller: Option<usize>) {
+        self.state = LoopState::Playing;
+        self.screen = Screen::Shop;
+        self.shop_index = 0;
+        self.shop_sell = false;
+        self.shop_seller = seller.filter(|index| {
+            *index < self.session.state.characters.len()
+                && !self.session.state.shop_stock(*index).is_empty()
+        });
+        self.notice.clear();
+        self.clamp_shop_index();
     }
 
     pub fn open_target(&mut self, action: usize) {
@@ -414,6 +560,38 @@ impl Runtime {
         self.screen = Screen::Target;
         self.target_index = 0;
         self.target_action = action;
+        self.update_target_character();
+    }
+
+    /// Select a room character and open their action menu (`FUN_1ba8_4604`).
+    pub fn select_character(&mut self, index: usize) -> Vec<RuntimeEvent> {
+        if index < self.session.state.characters.len() {
+            self.selected_character = index;
+            self.target_character = index;
+        }
+        self.open_screen(Screen::Action);
+        vec![RuntimeEvent::ScreenChanged(Screen::Action)]
+    }
+
+    /// Start Talk (`FUN_1ba8_22ef` -> `FUN_26c5_071a`).
+    pub fn talk_to(&mut self, target: usize) -> bool {
+        let Some(dialogue) = Dialogue::talk(
+            &self.session.state,
+            self.story.as_ref(),
+            self.selected_character,
+            target,
+        ) else {
+            self.notice = format!(
+                "{} has nothing to say.",
+                character_name(&self.session.state, target)
+            );
+            return false;
+        };
+        self.target_character = target;
+        self.dialogue = Some(dialogue);
+        self.state = LoopState::Playing;
+        self.screen = Screen::Dialogue;
+        true
     }
 
     /// Original loop state `-2`: menu/idle path.
@@ -462,6 +640,7 @@ impl Runtime {
     fn close_modal(&mut self) {
         self.state = LoopState::Playing;
         self.screen = Screen::Room;
+        self.dialogue = None;
         self.transition_remaining = None;
     }
 
@@ -542,9 +721,21 @@ impl Runtime {
                 _ => Vec::new(),
             },
             Screen::Status => match key {
-                Key::Status | Key::Cancel | Key::Confirm => {
+                Key::Status | Key::Cancel => {
                     self.close_modal();
                     vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+                }
+                Key::Up | Key::Left => {
+                    self.move_character(-1);
+                    Vec::new()
+                }
+                Key::Down | Key::Right => {
+                    self.move_character(1);
+                    Vec::new()
+                }
+                Key::Confirm | Key::Space => {
+                    self.open_item(3);
+                    vec![RuntimeEvent::ScreenChanged(Screen::Item)]
                 }
                 _ => Vec::new(),
             },
@@ -621,12 +812,15 @@ impl Runtime {
                     Vec::new()
                 }
                 Key::Confirm => {
-                    if matches!(self.action_index, 2 | 9) {
+                    if matches!(self.action_index, 2 | 5 | 9) {
                         self.open_target(self.action_index);
                         vec![RuntimeEvent::ScreenChanged(Screen::Target)]
                     } else if matches!(self.action_index, 0 | 1 | 3) {
                         self.open_item(self.action_index);
                         vec![RuntimeEvent::ScreenChanged(Screen::Item)]
+                    } else if self.action_index == 7 {
+                        self.open_spell();
+                        vec![RuntimeEvent::ScreenChanged(Screen::Spell)]
                     } else {
                         self.close_modal();
                         vec![RuntimeEvent::ScreenChanged(Screen::Room)]
@@ -645,9 +839,86 @@ impl Runtime {
                 }
                 Key::Down | Key::Right => {
                     self.item_index = self.item_index.saturating_add(1);
+                    self.clamp_item_index();
+                    Vec::new()
+                }
+                Key::Confirm | Key::Space => {
+                    self.perform_item_action();
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+            Screen::Spell => match key {
+                Key::Cancel | Key::Action | Key::Save | Key::Status => {
+                    self.close_modal();
+                    vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+                }
+                Key::Up | Key::Left => {
+                    self.item_index = self.item_index.saturating_sub(1);
+                    Vec::new()
+                }
+                Key::Down | Key::Right => {
+                    self.item_index = self.item_index.saturating_add(1);
+                    self.clamp_item_index();
+                    Vec::new()
+                }
+                Key::Confirm | Key::Space => {
+                    self.cast_selected_spell();
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+            Screen::Shop => match key {
+                Key::Cancel | Key::Action | Key::Save => {
+                    self.close_modal();
+                    vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+                }
+                Key::Space | Key::Left | Key::Right => {
+                    self.shop_sell = !self.shop_sell;
+                    self.shop_index = 0;
+                    self.clamp_shop_index();
+                    Vec::new()
+                }
+                Key::Up => {
+                    self.shop_index = self.shop_index.saturating_sub(1);
+                    Vec::new()
+                }
+                Key::Down => {
+                    self.shop_index = self.shop_index.saturating_add(1);
+                    self.clamp_shop_index();
                     Vec::new()
                 }
                 Key::Confirm => {
+                    self.perform_shop_action();
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            },
+            Screen::Dialogue => match key {
+                Key::Cancel | Key::Action | Key::Story => {
+                    self.close_modal();
+                    vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+                }
+                Key::Up | Key::Left => {
+                    if let Some(dialogue) = self.dialogue.as_mut() {
+                        dialogue.move_selection(-1);
+                    }
+                    Vec::new()
+                }
+                Key::Down | Key::Right => {
+                    if let Some(dialogue) = self.dialogue.as_mut() {
+                        dialogue.move_selection(1);
+                    }
+                    Vec::new()
+                }
+                Key::Confirm | Key::Space => {
+                    if let Some(mut dialogue) = self.dialogue.take() {
+                        if dialogue.has_choices() {
+                            self.notice = dialogue.apply_selected(&mut self.session.state);
+                        } else {
+                            self.notice = dialogue.text;
+                        }
+                    }
                     self.close_modal();
                     vec![RuntimeEvent::ScreenChanged(Screen::Room)]
                 }
@@ -660,16 +931,25 @@ impl Runtime {
                 }
                 Key::Up | Key::Left => {
                     self.target_index = self.target_index.saturating_sub(1);
+                    self.update_target_character();
                     Vec::new()
                 }
                 Key::Down | Key::Right => {
                     self.target_index = self.target_index.saturating_add(1);
+                    self.update_target_character();
                     Vec::new()
                 }
                 Key::Confirm => {
                     if self.target_action == 2 {
-                        self.open_screen(Screen::Story);
-                        vec![RuntimeEvent::ScreenChanged(Screen::Story)]
+                        if self.talk_to(self.target_character) {
+                            vec![RuntimeEvent::ScreenChanged(Screen::Dialogue)]
+                        } else {
+                            self.close_modal();
+                            vec![RuntimeEvent::ScreenChanged(Screen::Room)]
+                        }
+                    } else if self.target_action == 5 {
+                        self.open_shop(Some(self.target_character));
+                        vec![RuntimeEvent::ScreenChanged(Screen::Shop)]
                     } else if self.target_action == 9 {
                         self.open_item(9);
                         vec![RuntimeEvent::ScreenChanged(Screen::Item)]
@@ -729,7 +1009,7 @@ impl Runtime {
     }
 
     /// Route a click in logical 320x200 coordinates.
-    pub fn handle_click(&mut self, x: i16, _y: i16) -> Vec<RuntimeEvent> {
+    pub fn handle_click(&mut self, x: i16, y: i16) -> Vec<RuntimeEvent> {
         let left = i32::from(x) < i32::from(LOGICAL_WIDTH) / 2;
         match self.screen {
             Screen::Story => {
@@ -749,9 +1029,210 @@ impl Runtime {
                 }
                 Vec::new()
             }
-            Screen::Room => self.change_scene(if left { -1 } else { 1 }),
+            Screen::Status => {
+                self.move_character(if left { -1 } else { 1 });
+                Vec::new()
+            }
+            Screen::Item | Screen::Spell => {
+                if left {
+                    self.item_index = self.item_index.saturating_sub(1);
+                } else {
+                    self.item_index = self.item_index.saturating_add(1);
+                    self.clamp_item_index();
+                }
+                Vec::new()
+            }
+            Screen::Shop => {
+                self.shop_sell = left;
+                self.shop_index = 0;
+                self.clamp_shop_index();
+                Vec::new()
+            }
+            Screen::Target => {
+                if left {
+                    self.target_index = self.target_index.saturating_sub(1);
+                } else {
+                    self.target_index = self.target_index.saturating_add(1);
+                }
+                self.update_target_character();
+                Vec::new()
+            }
+            Screen::Room => {
+                if let Some(object) = self.session.object_at(x, y) {
+                    let room = self.room_characters();
+                    if !room.is_empty() {
+                        let character = room[object % room.len()];
+                        return self.select_character(character);
+                    }
+                }
+                self.change_scene(if left { -1 } else { 1 })
+            }
             _ => Vec::new(),
         }
+    }
+
+    fn character_indices(&self) -> Vec<usize> {
+        self.session
+            .state
+            .characters
+            .iter()
+            .enumerate()
+            .filter(|(_, character)| !character.name().is_empty())
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn move_character(&mut self, delta: isize) {
+        let indices = self.character_indices();
+        if indices.is_empty() {
+            return;
+        }
+        let position = indices
+            .iter()
+            .position(|index| *index == self.selected_character)
+            .unwrap_or(0);
+        let next = (position as isize + delta).rem_euclid(indices.len() as isize) as usize;
+        self.selected_character = indices[next];
+        self.target_character = self.selected_character;
+    }
+
+    fn target_candidates(&self) -> Vec<usize> {
+        let room: Vec<usize> = self
+            .session
+            .state
+            .room_characters(self.selected_character)
+            .into_iter()
+            .filter(|index| *index != self.selected_character)
+            .collect();
+        if !room.is_empty() {
+            return room;
+        }
+        self.character_indices()
+            .into_iter()
+            .filter(|index| *index != self.selected_character)
+            .collect()
+    }
+
+    fn update_target_character(&mut self) {
+        let candidates = self.target_candidates();
+        if candidates.is_empty() {
+            self.target_index = 0;
+            self.target_character = self.selected_character;
+            return;
+        }
+        self.target_index = self.target_index.min(candidates.len() - 1);
+        self.target_character = candidates[self.target_index];
+    }
+
+    fn clamp_item_index(&mut self) {
+        let len = match self.screen {
+            Screen::Spell => self.spell_entries().len(),
+            _ => self.item_entries().len(),
+        };
+        if len == 0 {
+            self.item_index = 0;
+        } else {
+            self.item_index = self.item_index.min(len - 1);
+        }
+    }
+
+    fn clamp_shop_index(&mut self) {
+        let len = self.shop_entries().len();
+        if len == 0 {
+            self.shop_index = 0;
+        } else {
+            self.shop_index = self.shop_index.min(len - 1);
+        }
+    }
+
+    fn perform_item_action(&mut self) {
+        let entries = self.item_entries();
+        let Some(entry) = entries.get(self.item_index).cloned() else {
+            self.notice = "Nothing here.".to_string();
+            return;
+        };
+        let result = match self.item_action {
+            0 => self.session.state.pickup_item(
+                self.selected_character,
+                entry.slot,
+                self.session.scene_id,
+            ),
+            1 => self
+                .session
+                .state
+                .drop_item(self.selected_character, entry.def, self.session.scene_id)
+                .map(|_| ()),
+            3 => self
+                .session
+                .state
+                .use_item(self.selected_character, entry.def, self.selected_character)
+                .map(|outcome| {
+                    self.notice = outcome.message;
+                }),
+            9 => self
+                .session
+                .state
+                .give_item(self.selected_character, self.target_character, entry.def, 1)
+                .map(|()| {
+                    let name = self
+                        .session
+                        .state
+                        .characters
+                        .get(self.target_character)
+                        .map_or_else(String::new, crate::save::Character::name);
+                    self.notice = format!("Gave {} to {name}.", entry.name);
+                }),
+            _ => Ok(()),
+        };
+        match result {
+            Ok(()) => {
+                if self.item_action == 0 {
+                    self.notice = format!("Picked up {}.", entry.name);
+                } else if self.item_action == 1 {
+                    self.notice = format!("Dropped {}.", entry.name);
+                }
+            }
+            Err(error) => self.notice = error.to_string(),
+        }
+        self.clamp_item_index();
+    }
+
+    fn cast_selected_spell(&mut self) {
+        let entries = self.spell_entries();
+        let Some(entry) = entries.get(self.item_index).cloned() else {
+            self.notice = "No magic prepared.".to_string();
+            return;
+        };
+        match self.session.state.cast_spell(
+            self.selected_character,
+            entry.def,
+            self.selected_character,
+        ) {
+            Ok(outcome) => self.notice = outcome.message,
+            Err(error) => self.notice = error.to_string(),
+        }
+        self.clamp_item_index();
+    }
+
+    fn perform_shop_action(&mut self) {
+        let entries = self.shop_entries();
+        let Some(entry) = entries.get(self.shop_index).cloned() else {
+            self.notice = "No stock.".to_string();
+            return;
+        };
+        let result = if self.shop_sell {
+            self.session
+                .state
+                .sell(self.selected_character, self.shop_seller, entry.def)
+                .map(|price| format!("Sold {} for {price} gold.", entry.name))
+        } else {
+            self.session
+                .state
+                .buy(self.selected_character, self.shop_seller, entry.def)
+                .map(|price| format!("Bought {} for {price} gold.", entry.name))
+        };
+        self.notice = result.unwrap_or_else(|error| error.to_string());
+        self.clamp_shop_index();
     }
 
     fn request_quit(&mut self) -> Vec<RuntimeEvent> {
@@ -850,6 +1331,13 @@ impl Runtime {
         match Session::load_save(&self.game_dir, &self.exe, scene_id, name) {
             Ok(session) => {
                 self.session = session;
+                self.selected_character = self.session.state.default_character();
+                self.target_character = self.selected_character;
+                self.item_index = 0;
+                self.shop_index = 0;
+                self.shop_seller = None;
+                self.notice.clear();
+                self.dialogue = None;
                 self.sync_scene_index();
                 self.screen = Screen::Room;
                 self.state = LoopState::Playing;
@@ -961,7 +1449,7 @@ mod tests {
         runtime.handle_key(Key::Confirm);
         assert_eq!(runtime.screen(), Screen::Target);
         runtime.handle_key(Key::Confirm);
-        assert_eq!(runtime.screen(), Screen::Story);
+        assert_eq!(runtime.screen(), Screen::Room);
 
         let mut runtime = make_runtime();
         runtime.handle_key(Key::Action);
@@ -969,7 +1457,50 @@ mod tests {
         runtime.handle_key(Key::Confirm);
         assert_eq!(runtime.screen(), Screen::Item);
         let events = runtime.handle_key(Key::Confirm);
-        assert_eq!(events, vec![RuntimeEvent::ScreenChanged(Screen::Room)]);
+        assert!(events.is_empty());
+        assert_eq!(runtime.screen(), Screen::Item);
+        assert_eq!(runtime.notice(), "Nothing here.");
+        runtime.handle_key(Key::Cancel);
+        assert_eq!(runtime.screen(), Screen::Room);
+    }
+
+    #[test]
+    fn action_routes_to_spell_and_trade() {
+        let mut runtime = make_runtime();
+        runtime.handle_key(Key::Action);
+        for _ in 0..7 {
+            runtime.handle_key(Key::Right);
+        }
+        assert_eq!(runtime.action_index(), 7);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Spell);
+        runtime.handle_key(Key::Cancel);
+
+        let mut runtime = make_runtime();
+        runtime.handle_key(Key::Action);
+        for _ in 0..5 {
+            runtime.handle_key(Key::Right);
+        }
+        assert_eq!(runtime.action_index(), 5);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Target);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Shop);
+        runtime.handle_key(Key::Space);
+        assert!(runtime.shop_sell());
+        runtime.handle_key(Key::Cancel);
+        assert_eq!(runtime.screen(), Screen::Room);
+    }
+
+    #[test]
+    fn status_is_interactive_and_keep_status_to_close() {
+        let mut runtime = make_runtime();
+        runtime.handle_key(Key::Status);
+        assert_eq!(runtime.screen(), Screen::Status);
+        runtime.handle_key(Key::Confirm);
+        assert_eq!(runtime.screen(), Screen::Item);
+        runtime.handle_key(Key::Cancel);
+        assert_eq!(runtime.screen(), Screen::Room);
     }
 
     #[test]

@@ -121,7 +121,12 @@ impl App {
                 let mut copy = display
                     .take()
                     .unwrap_or_else(|| self.runtime.session().frame.clone());
-                draw_status(&mut copy, self.runtime.session());
+                draw_status(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.selected_character(),
+                    self.runtime.notice(),
+                );
                 display = Some(copy);
             }
             Screen::Pause => {
@@ -182,6 +187,7 @@ impl App {
                     self.runtime.session(),
                     self.runtime.panel(),
                     self.runtime.action_index(),
+                    &self.runtime.actor_name(),
                 );
                 display = Some(copy);
             }
@@ -195,7 +201,63 @@ impl App {
                     self.runtime.panel(),
                     self.runtime.item_index(),
                     self.runtime.item_action(),
+                    &self.runtime.item_names(),
+                    &self.runtime.actor_name(),
+                    self.runtime.notice(),
                 );
+                display = Some(copy);
+            }
+            Screen::Spell => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                draw_name_list(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.panel(),
+                    &format!(
+                        "WHAT SPELL SHALL {} CAST?",
+                        self.runtime.actor_name().to_ascii_uppercase()
+                    ),
+                    &self
+                        .runtime
+                        .spell_entries()
+                        .into_iter()
+                        .map(|entry| entry.name)
+                        .collect::<Vec<_>>(),
+                    self.runtime.item_index(),
+                );
+                draw_notice(&mut copy, self.runtime.session(), self.runtime.notice());
+                display = Some(copy);
+            }
+            Screen::Shop => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                let gold = self
+                    .runtime
+                    .session()
+                    .state
+                    .gold(self.runtime.selected_character());
+                let title = if self.runtime.shop_sell() {
+                    format!("SELL  GOLD {gold}  SPACE TO BUY")
+                } else {
+                    format!("BUY  GOLD {gold}  SPACE TO SELL")
+                };
+                draw_name_list(
+                    &mut copy,
+                    self.runtime.session(),
+                    self.runtime.panel(),
+                    &title,
+                    &self
+                        .runtime
+                        .shop_entries()
+                        .into_iter()
+                        .map(|entry| format!("{}  {}g", entry.name, entry.price))
+                        .collect::<Vec<_>>(),
+                    self.runtime.shop_index(),
+                );
+                draw_notice(&mut copy, self.runtime.session(), self.runtime.notice());
                 display = Some(copy);
             }
             Screen::Target => {
@@ -207,7 +269,23 @@ impl App {
                     self.runtime.session(),
                     self.runtime.panel(),
                     self.runtime.target_index(),
+                    &self.runtime.target_names(),
                 );
+                display = Some(copy);
+            }
+            Screen::Dialogue => {
+                let mut copy = display
+                    .take()
+                    .unwrap_or_else(|| self.runtime.session().frame.clone());
+                if let Some(dialogue) = self.runtime.dialogue() {
+                    draw_dialogue(
+                        &mut copy,
+                        self.runtime.session(),
+                        self.runtime.panel(),
+                        &self.runtime.actor_name(),
+                        dialogue,
+                    );
+                }
                 display = Some(copy);
             }
             Screen::Menu => {
@@ -449,6 +527,7 @@ fn draw_actions(
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
+    actor: &str,
 ) {
     const ACTIONS: [&str; 12] = [
         "Pickup", "Drop", "Talk", "Use", "Search", "Trade", "Request", "Magic", "Seize", "Give",
@@ -462,18 +541,12 @@ fn draw_actions(
     let Some(font) = session.font() else {
         return;
     };
-    let name = session
-        .state
-        .characters
-        .first()
-        .map(|character| character.name().to_ascii_uppercase())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "CONSTANTINE".to_string());
+    let name = actor.to_ascii_uppercase();
     font.draw_text(
         frame,
         10,
         6,
-        &format!("SELECT AN ACTION FOR SIR {name}:"),
+        &format!("SELECT AN ACTION FOR {name}:"),
         Some(0),
     );
     for (index, action) in ACTIONS.iter().enumerate() {
@@ -504,6 +577,7 @@ fn draw_targets(
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
+    targets: &[String],
 ) {
     if let Some(panel) = panel {
         draw_panel(frame, panel, 0, 0, 320, 96);
@@ -514,13 +588,6 @@ fn draw_targets(
         return;
     };
     font.draw_text(frame, 10, 6, "PLEASE SELECT:", Some(0));
-    let targets: Vec<_> = session
-        .state
-        .characters
-        .iter()
-        .skip(1)
-        .filter(|character| !character.name().is_empty())
-        .collect();
     if targets.is_empty() {
         font.draw_text(frame, 12, 26, "NO TARGETS", Some(0));
         return;
@@ -537,7 +604,7 @@ fn draw_targets(
             frame,
             12,
             24 + row as i32 * 8,
-            &format!("{marker}{}", target.name().to_ascii_uppercase()),
+            &format!("{marker}{}", target.to_ascii_uppercase()),
             Some(0),
         );
     }
@@ -549,6 +616,9 @@ fn draw_items(
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
     action: usize,
+    items: &[String],
+    actor: &str,
+    notice: &str,
 ) {
     if let Some(panel) = panel {
         draw_panel(frame, panel, 0, 0, 320, 96);
@@ -558,29 +628,20 @@ fn draw_items(
     let Some(font) = session.font() else {
         return;
     };
-    let name = session
-        .state
-        .characters
-        .first()
-        .map(|character| character.name().to_ascii_uppercase())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "CONSTANTINE".to_string());
+    let name = actor.to_ascii_uppercase();
     let verb = match action {
         0 => "PICK UP",
         1 => "DROP",
-        3 => "USE",
+        3 => "USE / EQUIP",
         9 => "GIVE",
         _ => "SELECT",
     };
     font.draw_text(frame, 10, 6, &format!("WHAT SHALL {name} {verb}?"), Some(0));
-    let items: Vec<_> = session
-        .state
-        .items
-        .iter()
-        .filter(|item| !item.name().is_empty())
-        .collect();
     if items.is_empty() {
         font.draw_text(frame, 12, 26, "NOTHING", Some(0));
+        if !notice.is_empty() {
+            font.draw_text(frame, 12, 82, &truncate(notice, 44), Some(0));
+        }
         return;
     }
     let page = selected.min(items.len() - 1) / 8;
@@ -594,9 +655,98 @@ fn draw_items(
             frame,
             12,
             24 + row as i32 * 8,
-            &format!("{marker}{}", item.name().to_ascii_uppercase()),
+            &format!("{marker}{}", item.to_ascii_uppercase()),
             Some(0),
         );
+    }
+    if !notice.is_empty() {
+        font.draw_text(frame, 12, 86, &truncate(notice, 44), Some(0));
+    }
+}
+
+fn draw_name_list(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    title: &str,
+    names: &[String],
+    selected: usize,
+) {
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 0, 0, 320, 96);
+    } else {
+        fill_rect(frame, 0, 0, 320, 96, 0);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    font.draw_text(frame, 10, 6, title, Some(0));
+    if names.is_empty() {
+        font.draw_text(frame, 12, 26, "NOTHING", Some(0));
+        return;
+    }
+    let page = selected.min(names.len() - 1) / 8;
+    for row in 0..8 {
+        let index = page * 8 + row;
+        let Some(name) = names.get(index) else {
+            break;
+        };
+        let marker = if index == selected { "*" } else { " " };
+        font.draw_text(
+            frame,
+            12,
+            24 + row as i32 * 8,
+            &format!("{marker}{}", name.to_ascii_uppercase()),
+            Some(0),
+        );
+    }
+}
+
+fn draw_notice(frame: &mut IndexedFrame, session: &Session, notice: &str) {
+    if notice.is_empty() {
+        return;
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    fill_rect(frame, 0, 96, 320, 16, 0);
+    font.draw_text(frame, 10, 99, &truncate(notice, 44), Some(7));
+}
+
+fn draw_dialogue(
+    frame: &mut IndexedFrame,
+    session: &Session,
+    panel: Option<&soe_video::PlanarImage>,
+    actor: &str,
+    dialogue: &soe_engine::interaction::Dialogue,
+) {
+    if let Some(panel) = panel {
+        draw_panel(frame, panel, 0, 0, 320, 112);
+    } else {
+        fill_rect(frame, 0, 0, 320, 112, 0);
+    }
+    let Some(font) = session.font() else {
+        return;
+    };
+    let speaker = soe_engine::interaction::character_name(&session.state, dialogue.speaker);
+    let header = format!("{speaker} speaks to {actor}.").to_ascii_uppercase();
+    font.draw_text(frame, 12, 8, &header, Some(0));
+    let lines = wrap_text(font, &dialogue.text, 292);
+    for (line, text) in lines.iter().take(7).enumerate() {
+        font.draw_text(frame, 12, 22 + line as i32 * 10, text, Some(0));
+    }
+    if dialogue.has_choices() {
+        let y = 94;
+        for (index, choice) in dialogue.choices.iter().take(2).enumerate() {
+            let marker = if index == dialogue.selected { "*" } else { " " };
+            font.draw_text(
+                frame,
+                14 + index as i32 * 150,
+                y,
+                &format!("{marker}{}", choice.label.to_ascii_uppercase()),
+                Some(0),
+            );
+        }
     }
 }
 
@@ -842,7 +992,7 @@ fn draw_game_lost(frame: &mut IndexedFrame, session: &Session) {
     font.draw_text(frame, 104, 110, "PRESS ENTER TO QUIT", Some(7));
 }
 
-fn draw_status(frame: &mut IndexedFrame, session: &Session) {
+fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, notice: &str) {
     fill_rect(frame, 10, 18, 300, 168, 0);
     fill_rect(frame, 10, 18, 300, 1, 7);
     fill_rect(frame, 10, 185, 300, 1, 7);
@@ -851,36 +1001,103 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session) {
     let Some(font) = session.font() else {
         return;
     };
-    font.draw_text(frame, 16, 24, "ROUND TABLE", Some(8));
-    font.draw_text(frame, 16, 38, "KNIGHTS", Some(8));
-    font.draw_text(frame, 170, 38, "ITEMS", Some(8));
-    fill_rect(frame, 16, 48, 286, 1, 7);
-    for (index, character) in session
+    font.draw_text(frame, 16, 22, "ROUND TABLE", Some(8));
+    font.draw_text(frame, 190, 22, "UP/DN KNIGHT  ENTER ITEMS", Some(8));
+    font.draw_text(frame, 16, 38, "NAME", Some(8));
+    font.draw_text(frame, 112, 38, "HP HT MV COM ARM NOB FTH GOLD", Some(8));
+    fill_rect(frame, 16, 47, 286, 1, 7);
+
+    let indices: Vec<usize> = session
         .state
         .characters
         .iter()
-        .filter(|character| !character.name().is_empty())
-        .take(12)
         .enumerate()
-    {
-        let name = character.name().to_ascii_uppercase();
-        font.draw_text(frame, 16, 52 + index as i32 * 10, &name, Some(8));
+        .filter(|(_, character)| !character.name().is_empty())
+        .map(|(index, _)| index)
+        .collect();
+    if indices.is_empty() {
+        font.draw_text(frame, 16, 56, "NO KNIGHTS", Some(8));
+        return;
     }
-    for (index, item) in session
-        .state
-        .items
+    let position = indices
         .iter()
-        .filter(|item| !item.name().is_empty())
-        .take(12)
-        .enumerate()
-    {
+        .position(|index| *index == selected)
+        .unwrap_or(0);
+    let page = position / 8;
+    for row in 0..8 {
+        let index = page * 8 + row;
+        let Some(&character) = indices.get(index) else {
+            break;
+        };
+        let Some(sheet) = session.state.character_sheet(character) else {
+            continue;
+        };
+        let marker = if index == position { "*" } else { " " };
+        let y = 51 + row as i32 * 10;
+        font.draw_text(
+            frame,
+            16,
+            y,
+            &format!("{marker}{}", sheet.name.to_ascii_uppercase()),
+            Some(8),
+        );
+        font.draw_text(frame, 112, y, &format!("{:2}", sheet.health), Some(8));
+        font.draw_text(frame, 134, y, &format!("{:2}", sheet.hits), Some(8));
+        font.draw_text(frame, 152, y, &format!("{:2}", sheet.movement), Some(8));
         font.draw_text(
             frame,
             170,
-            52 + index as i32 * 10,
-            &item.name().to_ascii_uppercase(),
+            y,
+            &format!("{:3}", sheet.effective_combat),
             Some(8),
         );
+        font.draw_text(
+            frame,
+            194,
+            y,
+            &format!("{:3}", sheet.effective_armor),
+            Some(8),
+        );
+        font.draw_text(frame, 220, y, &format!("{:3}", sheet.nobility), Some(8));
+        font.draw_text(frame, 244, y, &format!("{:3}", sheet.faith), Some(8));
+        font.draw_text(frame, 268, y, &format!("{:4}", sheet.gold), Some(8));
+    }
+
+    let sheet = session.state.character_sheet(selected);
+    let (gear, spells) = sheet.map_or_else(
+        || (String::new(), String::new()),
+        |sheet| {
+            let gear = sheet
+                .equipment
+                .iter()
+                .map(|entry| entry.name.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let spells = sheet
+                .spells
+                .iter()
+                .map(|entry| entry.name.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (gear, spells)
+        },
+    );
+    font.draw_text(frame, 16, 136, "GEAR:", Some(8));
+    font.draw_text(frame, 56, 136, &truncate(&gear, 34), Some(8));
+    font.draw_text(frame, 16, 150, "MAGIC:", Some(8));
+    font.draw_text(frame, 62, 150, &truncate(&spells, 33), Some(8));
+    if !notice.is_empty() {
+        font.draw_text(frame, 16, 168, &truncate(notice, 38), Some(7));
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let mut out: String = text.chars().take(max.saturating_sub(3)).collect();
+        out.push_str("...");
+        out
     }
 }
 
@@ -998,6 +1215,12 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--items") {
         runtime.open_item(9);
+    }
+    if args.iter().any(|arg| arg == "--spells") {
+        runtime.open_screen(Screen::Spell);
+    }
+    if args.iter().any(|arg| arg == "--shop") {
+        runtime.open_screen(Screen::Shop);
     }
     if args.iter().any(|arg| arg == "--targets") {
         runtime.open_target(0);
