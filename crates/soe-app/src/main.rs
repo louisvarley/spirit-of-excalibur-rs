@@ -831,14 +831,16 @@ fn draw_world_map(
     let selected = selected
         .filter(|name| !name.is_empty())
         .map_or_else(|| "NO LOCATIONS".to_string(), str::to_ascii_uppercase);
-    font.draw_text(frame, 20, 18, "ENTER TRAVEL   T CLOSE   ARROWS", None);
+    // Keys are listed in the window title; the original map has no help line.
     let banner = match current.filter(|name| !name.is_empty()) {
         Some(current) => format!("{}   AT {}", selected, current.to_ascii_uppercase()),
         None => selected,
     };
-    let width = u32::try_from(banner.len()).unwrap_or(0) * 8;
-    let x = 160i32 - i32::try_from(width / 2).unwrap_or(0);
-    font.draw_text(frame, x.clamp(18, 250), 183, &banner, Some(7));
+    // The bottom strip carries the region name as part of the frame art
+    // (INTF#501), so the port's location label sits on the empty top strip,
+    // in the font's own colours like the original's frame text.
+    let width = i32::try_from(font.text_width(&banner)).unwrap_or(0);
+    font.draw_text(frame, (160 - width / 2).clamp(24, 296), 3, &banner, None);
 }
 
 /// Stone dialog window (`FUN_2036_0009`) drawn at `(x, y)` covering roughly
