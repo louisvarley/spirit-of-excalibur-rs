@@ -32,6 +32,7 @@ pub mod resources;
 pub mod text;
 
 pub mod room;
+pub mod room_builder;
 
 pub mod palette;
 

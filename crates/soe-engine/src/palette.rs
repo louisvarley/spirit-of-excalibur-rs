@@ -56,11 +56,17 @@ impl PaletteSet {
         let header_paras = usize::from(u16::from_le_bytes([bytes[8], bytes[9]]));
         let payload = header_paras.checked_mul(16)?;
         let dgroup = payload.checked_add(DGROUP_OFFSET)?;
+        Self::from_dgroup(bytes.get(dgroup..)?)
+    }
+
+    /// Parse palettes from a DGROUP image (`DS:0000` onwards).
+    #[must_use]
+    pub fn from_dgroup(ds: &[u8]) -> Option<Self> {
         Some(Self {
-            room: palette_at(bytes, dgroup + ROOM_DS)?,
-            map: palette_at(bytes, dgroup + MAP_DS)?,
-            ui: palette_at(bytes, dgroup + UI_DS)?,
-            raw: bytes.get(dgroup + RAW_START..dgroup + RAW_END)?.to_vec(),
+            room: palette_at(ds, ROOM_DS)?,
+            map: palette_at(ds, MAP_DS)?,
+            ui: palette_at(ds, UI_DS)?,
+            raw: ds.get(RAW_START..RAW_END)?.to_vec(),
         })
     }
 
