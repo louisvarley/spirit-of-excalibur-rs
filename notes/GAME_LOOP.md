@@ -28,7 +28,8 @@ the original were used to place the transitions: room entry sets `-1`,
 intro/room modes use `0`/`1`, travel/map interactions use `-3`, the
 game-lost path uses `-4`, and the post-combat return path uses `-5`.
 
-Every screen is a `Screen` variant: `Menu`, `Room`, `Map`, `Status`, `Story`,
+Every screen is a `Screen` variant: `Intro` (start-up intro, see
+`notes/INTRO.md`), `Menu`, `Room`, `Map`, `Status`, `Story`,
 `Travel`, `Save`, `Pause`, `Action`, `Item`, `Spell`, `Shop`, `Target`,
 `Battle`, `Dialogue`, `GameLost`, `Quit`.
 

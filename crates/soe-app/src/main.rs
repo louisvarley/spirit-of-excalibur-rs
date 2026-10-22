@@ -40,6 +40,7 @@ struct App {
     last_tick: Instant,
     cursor: (f64, f64),
     audio: Option<audio::AudioPlayer>,
+    music: Option<MusicLibrary>,
     ui: UiAssets,
 }
 
@@ -53,6 +54,7 @@ impl App {
             last_tick: Instant::now(),
             cursor: (0.0, 0.0),
             audio: None,
+            music: None,
             ui,
         }
     }
@@ -92,6 +94,11 @@ impl App {
                 | RuntimeEvent::BattleEnded(_)
                 | RuntimeEvent::GameLost
                 | RuntimeEvent::MenuEntered => {}
+                RuntimeEvent::Music(name) => {
+                    if let (Some(audio), Some(song)) = (&self.audio, self.music.as_ref().and_then(|m| m.find(&name))) {
+                        audio.play_score(&song.score);
+                    }
+                }
             }
         }
         self.update_title();
@@ -149,6 +156,10 @@ impl App {
         let base = match screen {
             Screen::Battle | Screen::Menu | Screen::GameLost => session.frame.clone(),
             Screen::Duel => duel_frame.unwrap_or_else(|| session.frame.clone()),
+            Screen::Intro => self
+                .runtime
+                .intro()
+                .map_or_else(|| session.frame.clone(), soe_engine::intro::Intro::frame),
             _ => map_base.unwrap_or_else(|| session.frame.clone()),
         };
         let mut g = Gfx::new(&self.ui, &base);
@@ -317,7 +328,9 @@ impl App {
         }
 
         let frame = g.into_frame();
-        let palette = if matches!(
+        let palette = if let Some(intro) = self.runtime.intro() {
+            intro.palette().colors
+        } else if matches!(
             screen,
             Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
         ) {
@@ -443,6 +456,9 @@ impl ApplicationHandler for App {
                 if let Some(key) = runtime_key(event.physical_key) {
                     let events = self.runtime.handle_key(key);
                     self.apply(event_loop, events);
+                } else if self.runtime.screen() == Screen::Intro {
+                    // Any key skips the intro, mapped or not.
+                    self.runtime.skip_intro();
                 }
             }
             _ => {}
@@ -1140,6 +1156,18 @@ fn load_record_image(path: &Path, id: u16) -> Result<soe_video::PlanarImage> {
         .with_context(|| format!("decoding record {id} from {}", path.display()))
 }
 
+/// The intro's TITLE.RES images and the `DS:1FD9` table; `None` without them.
+fn load_intro(game_dir: &Path, session: &Session) -> Option<soe_engine::intro::Intro> {
+    let file = soe_res::ResFile::parse(std::fs::read(game_dir.join("RES32").join("TITLE.RES")).ok()?).ok()?;
+    let mut images = std::collections::HashMap::new();
+    for id in soe_engine::intro::image_ids() {
+        let record = file.records().into_iter().find(|record| record.id == id)?;
+        images.insert(id, decode_planar(&file.decode(record).ok()?).ok()?);
+    }
+    let table = session.palettes().table(soe_engine::palette::TITLE_DS)?;
+    Some(soe_engine::intro::Intro::new(images, table, [0; 96]))
+}
+
 fn load_map(game_dir: &Path) -> Result<Option<WorldMap>> {
     let path = game_dir.join("RES32").join("INTF.RES");
     if !path.exists() {
@@ -1231,6 +1259,17 @@ fn main() -> Result<()> {
     if args.iter().any(|arg| arg == "--paused") {
         runtime.open_screen(Screen::Pause);
     }
+    // The start-up intro (`FUN_2c74_0006`), unless a start screen is asked for.
+    const START_FLAGS: [&str; 16] = [
+        "--scene", "--map", "--status", "--story", "--travel", "--saves", "--actions", "--items",
+        "--spells", "--shop", "--targets", "--paused", "--battle", "--duel", "--travel-to", "--no-intro",
+    ];
+    let mut start_events = Vec::new();
+    if !args.iter().any(|arg| START_FLAGS.contains(&arg.as_str())) {
+        if let Some(intro) = load_intro(&game_dir, runtime.session()) {
+            start_events = runtime.start_intro(intro);
+        }
+    }
     if args.iter().any(|arg| arg == "--battle") {
         if !runtime.start_demo_battle() {
             eprintln!("no army records available for a battle");
@@ -1280,16 +1319,19 @@ fn main() -> Result<()> {
 
     let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
     let audio = audio::AudioPlayer::new();
-    if let (Some(player), Some(library)) = (&audio, &music) {
-        if let Some(song) = library.map() {
-            player.play_score(&song.score);
-        }
+    let song = start_events.iter().find_map(|event| match event {
+        RuntimeEvent::Music(name) => music.as_ref().and_then(|m| m.find(name)),
+        _ => None,
+    });
+    if let (Some(player), Some(song)) = (&audio, song.or_else(|| music.as_ref().and_then(MusicLibrary::map))) {
+        player.play_score(&song.score);
     }
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = App::new(runtime, ui);
     app.audio = audio;
+    app.music = music;
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }

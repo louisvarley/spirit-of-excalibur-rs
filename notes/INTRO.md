@@ -57,7 +57,17 @@ and DAC at every `0b31` entry and after every cycle step, plus the entry
 clock, `DS:9D1C` and DAC (`tests/vectors/intro/`). The Rust test
 `intro::tests::matches_original_intro` replays the intro with fades that
 take no game time (the emulator's `3DA` toggles on every read, so its fades
-are instant too) and compares every frame, the DAC and the clock offsets.
+are instant too). Result: all 128 distinct pictures and all 93 DAC states
+match in order; picture-to-picture times match within 3 ticks and DAC times
+within 4. Exact times cannot match: the emulator's clock runs during
+drawing (40 000 instructions a tick), so `0b31(8)` waits drift and the flash
+lands 4 ticks later there. One timing rule came out of the replay: a tick
+that ends a wait does not also trigger a cycle step in that pass (the tick
+lands in the key check, and the deadline test follows it).
+
+Headless `soe-play --ticks N --screenshot` captures at N = 100, 760, 950 and
+1500 (lake, sword and hand, splash, title) are pixel-identical to recorded
+original frames; `--ticks 2200` ends in `MenuEntered`.
 
 ## Unverified
 
