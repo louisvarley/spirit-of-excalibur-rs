@@ -251,7 +251,8 @@ fn render_stereo(score: &Score, sample_rate: u32) -> Vec<f32> {
         .iter()
         .map(|note| note.1)
         .fold(0.0f64, f64::max)
-        .clamp(0.5, 120.0)
+        // Render the whole song so the loop restarts at its real end.
+        .clamp(0.5, 600.0)
         + 0.25;
     let total = (end_time * f64::from(sample_rate)).ceil() as usize;
     let mut out = Vec::with_capacity(total * 2);

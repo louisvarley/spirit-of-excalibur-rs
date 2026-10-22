@@ -125,8 +125,11 @@ impl Score {
             }
             let body = &data[start..end];
             match id {
+                // IFF is big-endian: tempo in 128ths of a quarter note per
+                // minute, then volume and track count. Read little-endian
+                // the tempos come out up to ~3x too fast (0xAF3E vs 0x3EAF).
                 b"SHDR" if body.len() >= 4 => {
-                    score.tempo = u16::from_le_bytes([body[0], body[1]]);
+                    score.tempo = u16::from_be_bytes([body[0], body[1]]);
                     score.volume = body[2];
                 }
                 b"NAME" => {
@@ -176,7 +179,7 @@ impl Score {
 
     #[must_use]
     pub fn timed_notes(&self) -> Vec<TimedNote> {
-        let mut out = Vec::new();
+        let mut out: Vec<TimedNote> = Vec::new();
         for (track_index, track) in self.tracks.iter().enumerate() {
             let mut time = 0.0f64;
             let mut instrument = track_index as u8;
@@ -184,6 +187,9 @@ impl Score {
             let mut chord_start = 0.0;
             let mut chord_duration = 0.0f64;
             let mut in_chord = false;
+            // Index in `out` of a note whose tie bit carries into the next
+            // note of the same pitch on this track.
+            let mut tied: Vec<(u8, usize)> = Vec::new();
             for event in &track.events {
                 match *event {
                     Event::Note { tone, duration } => {
@@ -195,14 +201,33 @@ impl Score {
                             chord_start = start;
                             chord_duration = quarters;
                         }
-                        out.push(TimedNote {
-                            start,
-                            duration: quarters,
-                            tone,
-                            velocity,
-                            instrument,
-                            track: track_index,
-                        });
+                        let continued = tied
+                            .iter()
+                            .position(|&(pitch, _)| pitch == tone)
+                            .map(|slot| tied.swap_remove(slot).1);
+                        let index = match continued {
+                            // A tie extends the held note instead of
+                            // striking it again.
+                            Some(index) => {
+                                let held = &mut out[index];
+                                held.duration = start + quarters - held.start;
+                                index
+                            }
+                            None => {
+                                out.push(TimedNote {
+                                    start,
+                                    duration: quarters,
+                                    tone,
+                                    velocity,
+                                    instrument,
+                                    track: track_index,
+                                });
+                                out.len() - 1
+                            }
+                        };
+                        if duration.tie {
+                            tied.push((tone, index));
+                        }
                         if duration.chord {
                             in_chord = true;
                         } else {
@@ -296,6 +321,29 @@ mod tests {
     use soe_res::ResFile;
 
     #[test]
+    fn tied_notes_are_held_not_restruck() {
+        // C quarter tied to C quarter, then D quarter.
+        let quarter = 2;
+        let score = Score {
+            tracks: vec![Track {
+                events: vec![
+                    Event::from_bytes(60, quarter | 0x40),
+                    Event::from_bytes(60, quarter),
+                    Event::from_bytes(62, quarter),
+                ],
+            }],
+            ..Score::default()
+        };
+        let notes = score.timed_notes();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(
+            (notes[0].tone, notes[0].start, notes[0].duration),
+            (60, 0.0, 2.0)
+        );
+        assert_eq!((notes[1].tone, notes[1].start), (62, 2.0));
+    }
+
+    #[test]
     fn parses_gamewon() {
         let Ok(bytes) = std::fs::read("../../game/MUSIC.RES") else {
             eprintln!("SKIP: MUSIC.RES absent");
@@ -306,6 +354,8 @@ mod tests {
         let data = file.decode(record).unwrap();
         let score = Score::parse(&data).unwrap();
         assert_eq!(score.name, "gamewon");
+        // SHDR starts 44 5B: big-endian 17499/128 = ~137 quarters per minute.
+        assert_eq!(score.tempo, 0x445b);
         assert_eq!(score.tracks.len(), 5);
         assert!(score.instruments.iter().any(|name| name == "clarinet"));
         assert!(score.duration_seconds() > 0.0);
