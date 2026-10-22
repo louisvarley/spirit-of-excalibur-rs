@@ -67,25 +67,59 @@ def record(snap: str) -> dict:
     def rng(uc, addr, size, user):
         cur["rng"].append(m.r("ax"))
 
-    def msgbox(uc, addr, size, user):
-        # Skip the dialog: record the string offset (arg 8) and RETF.
+    def retf() -> None:
         ss, sp = m.r("ss"), m.r("sp")
-        cur["msgs"].append(m.u16(ss, sp + 4 + 2 * 7))
         m.w("ip", m.u16(ss, sp))
         m.w("cs", m.u16(ss, sp + 2))
         m.w("sp", sp + 4)
+
+    def msgbox(uc, addr, size, user):
+        # Skip the dialog: record the format string (arg 8) with its
+        # arguments decoded (%S/%s strings, %d signed, %c/%W raw words).
+        ss, sp = m.r("ss"), m.r("sp")
+        arg = lambda k: m.u16(ss, sp + 4 + 2 * k)
+        text = arg(7)
+        fmt = m.asciiz(arg(8), text, 256)
+        k, out, i = 9, [], 0
+        while i < len(fmt) - 1:
+            if fmt[i] == "%":
+                c = fmt[i + 1]
+                i += 1
+                if c in "Ss":
+                    out.append(m.asciiz(arg(k + 1), arg(k), 256))
+                    k += 2
+                elif c == "d":
+                    out.append(arg(k) - 0x10000 if arg(k) & 0x8000 else arg(k))
+                    k += 1
+                elif c in "cW":
+                    out.append(arg(k))
+                    k += 1
+            i += 1
+        cur["msgs"].append([text, out])
+        retf()
+
+    def skip(name: str, nargs: int):
+        def h(uc, addr, size, user):
+            ss, sp = m.r("ss"), m.r("sp")
+            cur["subcalls"].append([name] + [m.u16(ss, sp + 4 + 2 * k) for k in range(nargs)])
+            retf()
+        return h
 
     hook = lambda f, a: m.uc.hook_add(UC_HOOK_CODE, f, begin=a, end=a)
     hook(stop, (SENTINEL[0] << 4) + SENTINEL[1])
     hook(rng, lin(0x15B8, 0x182E))
     hook(msgbox, lin(0x1772, 0x000E))
+    # Not ported with these leaves: recorded and skipped.
+    hook(skip("15b8_1876", 1), lin(0x15B8, 0x1876))
+    hook(skip("1772_0578", 0), lin(0x1772, 0x0578))
+    hook(skip("20b5_1229", 1), lin(0x20B5, 0x1229))
 
     def call(off: int, args: list[int], patch: list[list[int]] = ()) -> dict:
         m.restore(base)
         for at, v in patch:
             m.write(DS, at, bytes([v]))
         cur.clear()
-        cur.update(done=False, rng=[], msgs=[])
+        cur.update(done=False, rng=[], msgs=[], subcalls=[])
         for v in reversed(args):
             m.push(v)
         m.push(SENTINEL[0])
@@ -105,9 +139,10 @@ def record(snap: str) -> dict:
         before = bytearray(ds0)
         for at, v in patch:
             before[at] = v
-        diff = [[i, after[i]] for i in range(0x10000) if after[i] != before[i] and not lo <= i < hi]
+        diff = [[i, after[i]] for c in range(0, 0x10000, 0x100) if after[c:c + 0x100] != before[c:c + 0x100]
+                for i in range(c, c + 0x100) if after[i] != before[i] and not lo <= i < hi]
         return {"fn": f"{off:04x}", "args": args, "patch": [list(p) for p in patch], "ax": m.r("ax"), "rng": cur["rng"],
-                "msgs": cur["msgs"], "writes": diff}
+                "msgs": cur["msgs"], "subcalls": cur["subcalls"], "writes": diff}
 
     calls = []
     carried = []
@@ -131,6 +166,12 @@ def record(snap: str) -> dict:
             for to in (owners[0], o + 1):
                 for n in (1, 2, 7):
                     calls.append(call(0x0431, [d, o, to, n]))
+    for cid in range(1, 93):
+        for stat in (0x25, 0x2D, 0x2F, 0x30):
+            for delta in (-60, -3, -1, 1, 4, 250):
+                calls.append(call(0x2611, [stat, cid, delta & 0xFFFF]))
+        # Low nobility: a loss makes a knight forswear the Round Table.
+        calls.append(call(0x2611, [0x2F, cid, 0xFFFE], [[0x2C5E + cid * 0x38 + 0x2F, 3]]))
     print(f"{snap}: {len(carried)} carried instances, {len(calls)} calls", flush=True)
     return {"snapshot": snap, "dgroup": ds0.hex(), "calls": calls}
 
