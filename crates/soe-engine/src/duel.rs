@@ -8,9 +8,9 @@
 //! what to draw. It knows nothing about pixels: widgets are drawn by the
 //! presenter from their sprite resource and frame.
 //!
-//! Not ported here, so approximated: the room builder `FUN_2b79_0003`
-//! (the room base is taken as 0 and the presenter draws the whole field
-//! scene), the battle panel and the "click to start" wait of opcode 7, the
+//! The field scene is built by the ported room builder
+//! ([`room_builder::fun_2b79_0003`]), whose room base places the
+//! champions. Not ported here, so approximated: the battle panel and the "click to start" wait of opcode 7, the
 //! target rout check of combat opcode 5 (never routs), the stale
 //! `[BP-0x10]` word of the combat step (0), and the arguments of the battle
 //! message calls (the format offset is ported; names are filled in as the
@@ -19,10 +19,10 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
-
 use crate::combat::{self, CombatEvent, CombatWorld};
 use crate::resources::ResourceManager;
+use crate::room::{Cut, SceneImages};
+use crate::room_builder::{self, RoomBuild, RoomHost};
 use crate::script::{ScriptEvent, ScriptHost, ScriptScene, ScriptWorld, Widget};
 use crate::text::{format_message, Arg};
 
@@ -32,10 +32,6 @@ pub const CLOCK_HZ: u32 = 60;
 const CLOCK: usize = 0x7e3e;
 const CHAR: usize = 0x2c5e;
 const CHAR_SIZE: usize = 0x38;
-/// `DS:72EA`: scene ids for field types 0x3D and up (`FUN_2b79_0ea5`).
-const FIELD_SCENES: usize = 0x72ea;
-/// Handle bit for still images, so they never collide with sprite banks.
-const STILL: u32 = 0x1_0000;
 
 fn word(ds: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([ds[at], ds[at + 1]])
@@ -45,16 +41,7 @@ fn c_string(ds: &[u8], at: usize) -> String {
     ds[at..].iter().take_while(|&&b| b != 0).map(|&b| char::from(b)).collect()
 }
 
-/// `SCENES.RES` record for scene location `loc` in mode `mode`
-/// (`FUN_2b79_0ea5`).
-#[must_use]
-pub fn scene_record(ds: &[u8], loc: u8, mode: u8) -> u16 {
-    if loc < 0x3d {
-        u16::from(mode) * 100 + u16::from(loc)
-    } else {
-        word(ds, FIELD_SCENES + usize::from(loc - 0x3d) * 2)
-    }
-}
+pub use room_builder::scene_record;
 
 /// One widget to draw, back to front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +49,8 @@ pub struct Sprite {
     /// `ANI.RES` frame bank, or a still image when `still`.
     pub resource: u16,
     pub still: bool,
+    /// The image handle (see [`SceneImages::image`]).
+    pub image: u32,
     pub frame: u8,
     pub x: i16,
     pub y: i16,
@@ -73,12 +62,7 @@ pub struct Sprite {
 struct Host<'a> {
     ds: Vec<u8>,
     resources: &'a mut ResourceManager,
-    /// Image handle (= resource id) to `[refcount, 0, FRML record...]`,
-    /// the layout `FUN_14b0_0251` leaves in memory.
-    sheets: HashMap<u32, Vec<u8>>,
-    /// Still images (`FUN_14b0_0122`), handle `STILL | resource`, as their
-    /// resource records.
-    stills: HashMap<u32, Vec<u8>>,
+    images: SceneImages,
     rng: u32,
     messages: Vec<String>,
     sounds: Vec<u16>,
@@ -153,6 +137,13 @@ impl combat::DropHost for Host<'_> {
     }
 }
 
+impl RoomHost for Host<'_> {
+    fn cut_image(&mut self, _src: u32, res: u16, sx: u16, sy: u16, width: u16, height: u16) -> u32 {
+        self.images.cut(Cut { res, sx, sy, width, height })
+    }
+    fn free_image(&mut self, _image: u32) {}
+}
+
 impl ScriptHost for Host<'_> {
     fn clock(&mut self) -> u32 {
         // In the original the timer interrupt keeps counting while a script
@@ -177,41 +168,16 @@ impl ScriptHost for Host<'_> {
             .collect()
     }
     fn sheet(&self, image: u32) -> Vec<u8> {
-        self.sheets.get(&image).cloned().unwrap_or_default()
+        self.images.sheet(image)
     }
     fn load_image(&mut self, _old: u32, res: u16) -> u32 {
         self.load_sprite(res, 0)
     }
     fn load_sprite(&mut self, res: u16, _variant: u16) -> u32 {
-        let handle = u32::from(res);
-        if !self.sheets.contains_key(&handle) {
-            let data = self
-                .resources
-                .find_file(res)
-                .map(str::to_owned)
-                .and_then(|file| self.resources.record(&file, res).ok().map(<[u8]>::to_vec));
-            let Some(data) = data else { return 0 };
-            let mut sheet = vec![0, 0];
-            sheet.extend_from_slice(&data);
-            self.sheets.insert(handle, sheet);
-        }
-        handle
+        self.images.load_sprite(res, self.resources)
     }
     fn static_image(&mut self, res: u16) -> (u32, u16, u16) {
-        let handle = STILL | u32::from(res);
-        if !self.stills.contains_key(&handle) {
-            let data = self
-                .resources
-                .find_file(res)
-                .map(str::to_owned)
-                .and_then(|file| self.resources.record(&file, res).ok().map(<[u8]>::to_vec));
-            let Some(data) = data else { return (0, 0, 0) };
-            self.stills.insert(handle, data);
-        }
-        match soe_video::decode_planar(&self.stills[&handle]) {
-            Ok(image) => (handle, image.width, image.height),
-            Err(_) => (0, 0, 0),
-        }
+        self.images.static_image(res, self.resources)
     }
     fn retain_image(&mut self, _image: u32) {}
     fn release_image(&mut self, _flags: u16, _image: u32) {}
@@ -251,8 +217,9 @@ impl ScriptHost for Host<'_> {
 pub struct Duel {
     pub scene: ScriptScene,
     ds: Vec<u8>,
-    sheets: HashMap<u32, Vec<u8>>,
-    stills: HashMap<u32, Vec<u8>>,
+    pub images: SceneImages,
+    /// What the room builder drew for the field scene.
+    pub build: RoomBuild,
     rng: u32,
     /// `SCENES.RES` record of the field scene behind the fight.
     pub scene_id: u16,
@@ -269,7 +236,17 @@ impl Duel {
     /// Set up the field scene for `party` against `foe` on DGROUP `ds`
     /// (the live map state): battle lists `DS:9DC3` / `DS:9DD7`, field
     /// type `field` (`DS:9DF5`), automatic orders (`DS:01F2 = 0`).
-    pub fn start(ds: &[u8], resources: &mut ResourceManager, party: u8, foe: u8, field: u8, seed: u32) -> Self {
+    /// `scenes` reads a `SCENES.RES` record (see [`scene_record`] for the
+    /// one this field uses).
+    pub fn start(
+        ds: &[u8],
+        resources: &mut ResourceManager,
+        scenes: impl FnOnce(u16) -> Option<Vec<u8>>,
+        party: u8,
+        foe: u8,
+        field: u8,
+        seed: u32,
+    ) -> Self {
         let mut ds = ds.to_vec();
         for at in 0x9dc3..0x9dc3 + 0x28 {
             ds[at] = 0;
@@ -298,17 +275,27 @@ impl Duel {
         ds[0x9df6] = 1;
         ds[0x01f5] = 0;
         let scene_id = scene_record(&ds, field, 0);
-        let mut host = Host { ds, resources, sheets: HashMap::new(), stills: HashMap::new(), rng: seed, messages: Vec::new(), sounds: Vec::new(), reads: 0, over: false };
+        let mut host = Host { ds, resources, images: SceneImages::default(), rng: seed, messages: Vec::new(), sounds: Vec::new(), reads: 0, over: false };
         let mut scene = ScriptScene { clip: [0, 0, 200, 320], ..ScriptScene::default() };
         // Widget 0 is never run by the scene loop; the room builder's
         // backdrop normally fills it.
         let mut backdrop = [0u8; 0x36];
         backdrop[0x0f] = 0xff;
         scene.widgets.push(backdrop);
+        // FUN_2d65_13e2: FUN_2b79_0ea5 (DS:9DC1 = found), then
+        // FUN_2b79_0003(2) and the characters on its room base.
+        let mut build = RoomBuild::default();
+        if let Some(record) = scenes(scene_id).filter(|r| r.len() >= 2) {
+            room_builder::fun_2b79_0ea5(&mut host.ds, scene_id, &record, true);
+            host.ds[0x9dc1] = 1;
+            let mut ds = std::mem::take(&mut host.ds);
+            build = room_builder::fun_2b79_0003(&mut scene, &mut ds, &record, 2, &mut host);
+            host.ds = ds;
+        }
         let snapshot = host.ds.clone();
-        scene.fun_2d65_13e2_characters(&snapshot, 0, 0, &mut host);
-        let Host { ds, sheets, stills, rng, messages, sounds, .. } = host;
-        Self { scene, ds, sheets, stills, rng, scene_id, champions: [party, foe], messages, sounds, pending: 0, over: false }
+        scene.fun_2d65_13e2_characters(&snapshot, build.base as u8, 0, &mut host);
+        let Host { ds, images, rng, messages, sounds, .. } = host;
+        Self { scene, ds, images, build, rng, scene_id, champions: [party, foe], messages, sounds, pending: 0, over: false }
     }
 
     /// DGROUP after the fight so far (hit points live in the character
@@ -336,13 +323,13 @@ impl Duel {
     /// The resource record of a still image the scene loaded.
     #[must_use]
     pub fn still(&self, resource: u16) -> Option<&[u8]> {
-        self.stills.get(&(STILL | u32::from(resource))).map(Vec::as_slice)
+        self.images.still(resource)
     }
 
     /// The `ANI.RES` frame bank of a sprite resource the scene loaded.
     #[must_use]
     pub fn bank(&self, resource: u16) -> Option<&[u8]> {
-        self.sheets.get(&u32::from(resource)).map(|sheet| &sheet[2..])
+        self.images.bank(resource)
     }
 
     /// Current hit points of a champion (`name + 0x2C`).
@@ -365,8 +352,7 @@ impl Duel {
         let mut host = Host {
             ds: std::mem::take(&mut self.ds),
             resources,
-            sheets: std::mem::take(&mut self.sheets),
-            stills: std::mem::take(&mut self.stills),
+            images: std::mem::take(&mut self.images),
             rng: self.rng,
             messages: Vec::new(),
             sounds: Vec::new(),
@@ -388,8 +374,7 @@ impl Duel {
             }
         }
         self.ds = host.ds;
-        self.sheets = host.sheets;
-        self.stills = host.stills;
+        self.images = host.images;
         self.rng = host.rng;
         self.over = host.over;
         if self.over {
@@ -417,7 +402,8 @@ impl Duel {
                 }
                 Some(Sprite {
                     resource: res as u16,
-                    still: res & STILL != 0,
+                    still: res & crate::room::STILL != 0,
+                    image: res,
                     frame: w[0x26],
                     x,
                     y: i16::from_le_bytes([w[0x10], w[0x11]]),
@@ -467,9 +453,14 @@ mod tests {
             ds[e + 1] = owner;
             ds[e + 3] = 0x18;
         }
-        let mut duel = Duel::start(&ds, session.resources_mut(), 1, 62, 73, 2);
+        let record = session.scene_record(907).ok();
+        let mut duel = Duel::start(&ds, session.resources_mut(), |_| record, 1, 62, 73, 2);
         assert_eq!(duel.scene_id, 907);
-        assert_eq!(duel.sprites().len(), 2, "two champions");
+        let champions = |duel: &Duel| duel.scene.widgets.iter().filter(|w| w[0] & 0x40 != 0 && w[0x0f] < 0xc8 && (w[0x0a] == 1 || w[0x0a] == 62)).count();
+        assert_eq!(champions(&duel), 2, "two champions");
+        // Scene 907's army soldiers (0x429..=0x42F) stay out of a duel.
+        assert!(duel.build.background.iter().all(|s| !(0x429..=0x42f).contains(&s.res)));
+        let field_stills = duel.sprites().iter().filter(|s| s.still).count();
         let mut seconds = 0;
         while !duel.finished() && seconds < 300 {
             duel.advance(CLOCK_HZ, session.resources_mut());
@@ -481,7 +472,7 @@ mod tests {
         eprintln!("after {seconds}s: hp {} / {}", duel.hit_points(1), duel.hit_points(62));
         assert!(!duel.messages.is_empty(), "the champions exchanged blows");
         assert!(duel.finished(), "the duel ended");
-        let stills = duel.sprites().iter().filter(|s| s.still).count();
+        let stills = duel.sprites().iter().filter(|s| s.still).count() - field_stills;
         eprintln!("dropped items on the field: {stills}");
         assert_eq!(stills, 1, "seed 2: the loser drops its item");
         for s in duel.sprites().iter().filter(|s| s.still) {

@@ -431,7 +431,7 @@ fn set_rect(widget: &mut Widget, at: usize, r: [i16; 4]) {
 
 /// `FUN_18cb_16f0`: the union of two rects, ignoring one that is empty or
 /// off the original's 320x200 screen.
-fn fun_18cb_16f0(a: [i16; 4], b: [i16; 4]) -> [i16; 4] {
+pub(crate) fn fun_18cb_16f0(a: [i16; 4], b: [i16; 4]) -> [i16; 4] {
     let valid = |r: [i16; 4]| {
         r[0] <= 200 && r[1] <= 320 && r[2] >= 0 && r[3] >= 0 && r[2] > r[0] && r[3] > r[1]
     };
@@ -446,7 +446,7 @@ fn fun_18cb_16f0(a: [i16; 4], b: [i16; 4]) -> [i16; 4] {
 
 /// `FUN_30ec_0006`: intersect `a` with `b`; true when the result is not
 /// empty.
-fn fun_30ec_0006(a: [i16; 4], b: [i16; 4]) -> ([i16; 4], bool) {
+pub(crate) fn fun_30ec_0006(a: [i16; 4], b: [i16; 4]) -> ([i16; 4], bool) {
     let r = [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])];
     (r, r[0] < r[2] && r[1] < r[3])
 }
@@ -786,6 +786,20 @@ impl ScriptScene {
         let (clipped, _) = fun_30ec_0006(rect(wd, 0x1c), self.clip);
         set_rect(wd, 0x1c, clipped);
         set_w(wd, 0, w(wd, 0) | 2);
+    }
+
+    /// `FUN_15b8_0978(lo, hi)`: remove every widget whose depth `+0x0F` is
+    /// in `lo..=hi`.
+    pub fn fun_15b8_0978(&mut self, lo: u8, hi: u8, host: &mut dyn ScriptHost) {
+        let mut i = 0;
+        while i < self.widgets.len() {
+            let depth = self.widgets[i][0x0f];
+            if depth < lo || depth > hi {
+                i += 1;
+            } else {
+                self.fun_15b8_0834(i, host);
+            }
+        }
     }
 
     /// `FUN_15b8_0834`: remove widget `index`, releasing its image, and

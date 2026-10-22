@@ -14,7 +14,9 @@ use crate::font::BitmapFont;
 use crate::palette::PaletteSet;
 use crate::window::WindowStyle;
 use crate::resources::{ResourceError, ResourceManager};
-use crate::room::compose_scene;
+use crate::room::{draw_background, draw_widgets, Cut, SceneImages};
+use crate::room_builder::{self, RoomBuild, RoomHost};
+use crate::script::{ScriptEvent, ScriptHost, ScriptScene, ScriptWorld};
 use crate::save::GameState;
 use crate::scene::Scene;
 
@@ -77,6 +79,60 @@ pub struct Session {
     static_images: std::collections::HashMap<u16, soe_video::PlanarImage>,
     animations: std::collections::HashMap<u16, Vec<soe_video::PlanarImage>>,
     animation_frame: usize,
+    /// The current room as `FUN_2b79_0003` built it: its widgets, images
+    /// and background stamps.
+    room: ScriptScene,
+    room_images: SceneImages,
+    room_build: RoomBuild,
+}
+
+/// The builder's view of the session: images from the resource archives
+/// and a fixed random sequence (the original's is timer-seeded).
+struct BuildHost<'a> {
+    resources: &'a mut ResourceManager,
+    images: &'a mut SceneImages,
+    rng: u32,
+}
+
+impl ScriptWorld for BuildHost<'_> {
+    fn random(&mut self, n: u16) -> u16 {
+        self.rng = self.rng.wrapping_mul(0x015a_4e35).wrapping_add(1);
+        if n == 0 { 0 } else { ((self.rng >> 16) % u32::from(n)) as u16 }
+    }
+}
+
+impl ScriptHost for BuildHost<'_> {
+    fn clock(&mut self) -> u32 {
+        0
+    }
+    fn program(&self, _script: u8) -> Vec<u16> {
+        Vec::new()
+    }
+    fn sheet(&self, image: u32) -> Vec<u8> {
+        self.images.sheet(image)
+    }
+    fn load_image(&mut self, _old: u32, res: u16) -> u32 {
+        self.images.load_sprite(res, self.resources)
+    }
+    fn load_sprite(&mut self, res: u16, _variant: u16) -> u32 {
+        self.images.load_sprite(res, self.resources)
+    }
+    fn static_image(&mut self, res: u16) -> (u32, u16, u16) {
+        self.images.static_image(res, self.resources)
+    }
+    fn retain_image(&mut self, _image: u32) {}
+    fn release_image(&mut self, _flags: u16, _image: u32) {}
+    fn event(&mut self, _event: ScriptEvent) {}
+    fn hook(&mut self, _handler: u16, _arg: u16, _scene: &mut ScriptScene) -> u8 {
+        2
+    }
+}
+
+impl RoomHost for BuildHost<'_> {
+    fn cut_image(&mut self, _src: u32, res: u16, sx: u16, sy: u16, width: u16, height: u16) -> u32 {
+        self.images.cut(Cut { res, sx, sy, width, height })
+    }
+    fn free_image(&mut self, _image: u32) {}
 }
 
 impl Session {
@@ -105,6 +161,9 @@ impl Session {
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
+            room: ScriptScene::default(),
+            room_images: SceneImages::default(),
+            room_build: RoomBuild::default(),
         }
     }
 
@@ -164,12 +223,31 @@ impl Session {
             static_images: std::collections::HashMap::new(),
             animations: std::collections::HashMap::new(),
             animation_frame: 0,
+            room: ScriptScene::default(),
+            room_images: SceneImages::default(),
+            room_build: RoomBuild::default(),
         };
         session.enter_scene(scene_id)?;
         Ok(session)
     }
 
-    /// Load and render a scene by logical id.
+    /// The decoded `SCENES.RES` record `scene_id`.
+    pub fn scene_record(&self, scene_id: u16) -> Result<Vec<u8>, SessionError> {
+        let scenes_path = self.game_dir.join("SCENES.RES");
+        let file = ResFile::parse(std::fs::read(scenes_path)?)
+            .map_err(|e| SessionError::Res(e.to_string()))?;
+        let record = file
+            .records()
+            .into_iter()
+            .find(|record| record.id == scene_id)
+            .ok_or_else(|| SessionError::Scene(format!("scene {scene_id} not found")))?;
+        file.decode(record).map_err(|e| SessionError::Res(e.to_string()))
+    }
+
+    /// Load and render a scene by logical id. The room is built by the
+    /// ported `FUN_2b79_0003` over the EXE's initial DGROUP (scene mode 0,
+    /// no campaign battle, the objects lying in the initial game), so what
+    /// shows matches the original's choice of objects.
     pub fn enter_scene(&mut self, scene_id: u16) -> Result<(), SessionError> {
         let scenes_path = self.game_dir.join("SCENES.RES");
         let file = ResFile::parse(std::fs::read(scenes_path)?)
@@ -209,9 +287,22 @@ impl Session {
             }
         }
 
-        self.scene_palette = self
-            .palettes
-            .scene_palette(scene.objects.iter().map(|object| object.resource_id));
+        let mut room = ScriptScene { clip: [0, 0, 200, 320], ..ScriptScene::default() };
+        let mut images = SceneImages::default();
+        let mut build = RoomBuild::default();
+        if let Some(mut ds) = self.dgroup.clone().filter(|ds| ds.len() >= 0x10000) {
+            room_builder::fun_2b79_0ea5(&mut ds, scene_id, &data, true);
+            let mut host = BuildHost { resources: &mut self.resources, images: &mut images, rng: u32::from(scene_id) };
+            build = room_builder::fun_2b79_0003(&mut room, &mut ds, &data, 2, &mut host);
+            self.scene_palette = self.palettes.scene_palette(build.palette_ids.iter().copied());
+        } else {
+            self.scene_palette = self
+                .palettes
+                .scene_palette(scene.objects.iter().map(|object| object.resource_id));
+        }
+        self.room = room;
+        self.room_images = images;
+        self.room_build = build;
         self.scene = scene;
         self.scene_id = scene_id;
         self.static_images = static_images;
@@ -224,45 +315,54 @@ impl Session {
     /// Re-render the current scene using the current animation frame.
     fn recompose(&mut self) {
         let animation_frame = self.animation_frame;
-        let frame = compose_scene(&self.scene, &self.scene_palette, |id| {
-            self.static_images.get(&id).cloned().or_else(|| {
-                self.animations
-                    .get(&id)
-                    .and_then(|frames| frames.get(animation_frame % frames.len()))
-                    .cloned()
-            })
-        });
+        if self.room_build.background.is_empty() && self.room.widgets.is_empty() {
+            // No DGROUP to build from (headless): draw the record as listed.
+            self.frame = crate::room::compose_scene(&self.scene, &self.scene_palette, |id| {
+                self.static_images.get(&id).cloned().or_else(|| {
+                    self.animations
+                        .get(&id)
+                        .and_then(|frames| frames.get(animation_frame % frames.len()))
+                        .cloned()
+                })
+            });
+            return;
+        }
+        let mut frame = self.blank_frame(self.scene_palette.clone());
+        draw_background(&mut frame, &self.room_build, &self.room_images);
+        // The scenery scripts are not run here: animations cycle their
+        // bank's frames instead.
+        let mut widgets = self.room.widgets.clone();
+        for w in &mut widgets {
+            let id = u16::from_le_bytes([w[0x0a], w[0x0b]]);
+            if w[0] & 0x40 != 0 {
+                if let Some(frames) = self.animations.get(&id) {
+                    w[0x26] = (animation_frame % frames.len()) as u8;
+                }
+            }
+        }
+        draw_widgets(&mut frame, &widgets, &self.room_images, |_| None);
         self.frame = frame;
     }
 
-    /// The current scene with the duel's widgets drawn over it, back to
-    /// front: each sprite is frame `frame` of its `ANI.RES` bank with its
-    /// top-left at the widget position, mirrored when the widget is, and
-    /// recoloured through its remap table.
+    fn blank_frame(&self, palette: Palette) -> IndexedFrame {
+        IndexedFrame::new(
+            soe_video::LOGICAL_WIDTH,
+            soe_video::LOGICAL_HEIGHT,
+            vec![0; usize::from(soe_video::LOGICAL_WIDTH) * usize::from(soe_video::LOGICAL_HEIGHT)],
+            palette,
+        )
+        .expect("logical frame dimensions")
+    }
+
+    /// The duel's field scene as the room builder made it, with the scene
+    /// widgets (scenery, occluders, cut-outs, champions, dropped items)
+    /// drawn over it back to front, recoloured through their remap tables.
     #[must_use]
     pub fn compose_duel(&self, duel: &crate::duel::Duel) -> soe_video::IndexedFrame {
-        let mut frame = self.frame.clone();
-        for sprite in duel.sprites() {
-            let image = if sprite.still {
-                duel.still(sprite.resource).and_then(|data| decode_planar(data).ok())
-            } else {
-                duel.bank(sprite.resource)
-                    .and_then(|data| FrameBank::parse(data).ok())
-                    .and_then(|bank| bank.frame_image(usize::from(sprite.frame & 0x7f)))
-            };
-            let Some(image) = image else {
-                continue;
-            };
-            let remap = duel.remap_table(sprite.remap);
-            crate::room::blit_remapped(
-                &mut frame,
-                &image,
-                i32::from(sprite.x),
-                i32::from(sprite.y),
-                sprite.mirrored,
-                remap.as_ref(),
-            );
-        }
+        let palette = self.palettes.scene_palette(duel.build.palette_ids.iter().copied());
+        let mut frame = self.blank_frame(palette);
+        draw_background(&mut frame, &duel.build, &duel.images);
+        draw_widgets(&mut frame, &duel.scene.widgets, &duel.images, |remap| duel.remap_table(remap));
         frame
     }
 
@@ -470,6 +570,35 @@ mod tests {
         let restored = GameState::parse(&data).unwrap();
         assert_eq!(restored.characters[0].name(), "Constantine");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Writes rooms and the duel field as PPM files to `$SOE_SHOTS`, for
+    /// comparing with the original (`tests/oracle/room_vectors.py` saves
+    /// its screenshots as `tests/vectors/emu/room_*.png`).
+    #[test]
+    #[ignore]
+    fn render_rooms_for_comparison() {
+        let Ok(dir) = std::env::var("SOE_SHOTS") else { return };
+        let game = Path::new("../../game");
+        let exe = Path::new("../../ghidra/EXCAL_UNPACKED.EXE");
+        let mut session = Session::load(game, exe, 1).unwrap();
+        let write = |name: &str, frame: &IndexedFrame| {
+            let mut out = b"P6 320 200 255
+".to_vec();
+            for &p in &frame.pixels {
+                out.extend_from_slice(&frame.palette.colors.get(usize::from(p)).copied().unwrap_or([0; 3]));
+            }
+            std::fs::write(format!("{dir}/{name}.ppm"), out).unwrap();
+        };
+        for id in [1u16, 2, 907] {
+            session.enter_scene(id).unwrap();
+            write(&format!("room_{id}"), &session.frame);
+        }
+        let ds = session.dgroup().unwrap().to_vec();
+        let record = session.scene_record(907).ok();
+        let mut duel = crate::duel::Duel::start(&ds, session.resources_mut(), |_| record, 1, 62, 73, 2);
+        duel.advance(120, session.resources_mut());
+        write("duel", &session.compose_duel(&duel));
     }
 
     #[test]

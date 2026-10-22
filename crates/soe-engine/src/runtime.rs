@@ -557,7 +557,8 @@ impl Runtime {
         // Field type 73 (grassland), as in the recorded duel; the original
         // picks it from the terrain under the champion (FUN_2d65_13e2,
         // not ported yet).
-        let duel = crate::duel::Duel::start(&ds, self.session.resources_mut(), mine, theirs, 73, battle_seed());
+        let record = self.session.scene_record(crate::duel::scene_record(&ds, 73, 0)).ok();
+        let duel = crate::duel::Duel::start(&ds, self.session.resources_mut(), |_| record, mine, theirs, 73, battle_seed());
         self.duel_return_scene = Some(self.session.scene_id);
         let _ = self.session.enter_scene(duel.scene_id);
         self.duel = Some(duel);
