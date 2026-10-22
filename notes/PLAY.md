@@ -46,9 +46,13 @@ The process needs the original game files; they remain git-ignored.
 | F9 | quick-load from `QUICK.SAV` |
 | Esc | quit |
 
+Without a start-screen flag the build first plays the original intro
+(`notes/INTRO.md`); any key or click skips it, then the menu opens.
+
 Startup flags:
 
 ```text
+--no-intro  skip the intro
 --scene N   start at scene id N
 --map       start in map view
 --status    start in status view

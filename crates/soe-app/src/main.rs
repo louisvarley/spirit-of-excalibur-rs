@@ -14,16 +14,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod audio;
+mod gfx;
 
 use anyhow::{Context, Result};
+use gfx::{Gfx, UiAssets};
 use soe_engine::battle::{Battle, Order};
 use soe_engine::runtime::{Key, Runtime, RuntimeEvent, Screen};
 use soe_engine::session::Session;
 use soe_engine::smus::MusicLibrary;
 use soe_engine::story::HintBook;
-use soe_engine::window::{self as window, WindowOp};
+use soe_engine::window;
 use soe_engine::worldmap::WorldMap;
-use soe_video::{IndexedFrame, decode_planar};
+use soe_video::{IndexedFrame, LOGICAL_HEIGHT, LOGICAL_WIDTH, decode_planar};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -38,10 +40,12 @@ struct App {
     last_tick: Instant,
     cursor: (f64, f64),
     audio: Option<audio::AudioPlayer>,
+    music: Option<MusicLibrary>,
+    ui: UiAssets,
 }
 
 impl App {
-    fn new(runtime: Runtime) -> Self {
+    fn new(runtime: Runtime, ui: UiAssets) -> Self {
         Self {
             window: None,
             context: None,
@@ -50,6 +54,8 @@ impl App {
             last_tick: Instant::now(),
             cursor: (0.0, 0.0),
             audio: None,
+            music: None,
+            ui,
         }
     }
 
@@ -88,6 +94,11 @@ impl App {
                 | RuntimeEvent::BattleEnded(_)
                 | RuntimeEvent::GameLost
                 | RuntimeEvent::MenuEntered => {}
+                RuntimeEvent::Music(name) => {
+                    if let (Some(audio), Some(song)) = (&self.audio, self.music.as_ref().and_then(|m| m.find(&name))) {
+                        audio.play_score(&song.score);
+                    }
+                }
             }
         }
         self.update_title();
@@ -107,7 +118,7 @@ impl App {
     fn compose_frame(&self) -> (IndexedFrame, Vec<[u8; 3]>) {
         let screen = self.runtime.screen();
 
-        let mut display = if matches!(
+        let map_base = if matches!(
             screen,
             Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
         ) {
@@ -132,88 +143,81 @@ impl App {
         } else {
             None
         };
+        // Pick the engine-composed base frame exactly as before: map screens
+        // draw over the regional map, the duel over its field scene, and the
+        // rest over the current room.
+        let session = self.runtime.session();
+        let duel_frame = if screen == Screen::Duel {
+            self.runtime.duel_frame()
+        } else {
+            None
+        };
+        let duel_base = duel_frame.is_some();
+        let base = match screen {
+            Screen::Battle | Screen::Menu | Screen::GameLost => session.frame.clone(),
+            Screen::Duel => duel_frame.unwrap_or_else(|| session.frame.clone()),
+            Screen::Intro => self
+                .runtime
+                .intro()
+                .map_or_else(|| session.frame.clone(), soe_engine::intro::Intro::frame),
+            _ => map_base.unwrap_or_else(|| session.frame.clone()),
+        };
+        let mut g = Gfx::new(&self.ui, &base);
         match screen {
             Screen::Status => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_status(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.selected_character(),
                     self.runtime.notice(),
                 );
-                display = Some(copy);
             }
             Screen::Pause => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
-                if let Some(font) = self.runtime.session().font() {
-                    if let Some(panel) = self.runtime.panel() {
-                        draw_panel(&mut copy, self.runtime.session(), panel, 0, 72, 320, 56);
+                if g.has_font() {
+                    if g.has_sheet() {
+                        g.panel(self.runtime.session(), 0, 72, LOGICAL_WIDTH.into(), 56);
                     }
-                    font.draw_text(&mut copy, 14, 82, "THE GAME IS PAUSED.", None);
-                    font.draw_text(&mut copy, 14, 96, "TO CONTINUE, PRESS A KEY.", None);
+                    g.text(14, 82, "THE GAME IS PAUSED.", None);
+                    g.text(14, 96, "TO CONTINUE, PRESS A KEY.", None);
                 }
-                display = Some(copy);
             }
             Screen::Story => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_story(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.story(),
                     self.runtime.panel(),
                     self.runtime.story_page(),
                 );
-                display = Some(copy);
             }
             Screen::Map | Screen::Travel => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_world_map(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.selected_location_name().as_deref(),
                     self.runtime.current_location_name().as_deref(),
                 );
-                display = Some(copy);
             }
             Screen::Save => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_saves(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.save_files(),
                     self.runtime.save_index(),
                 );
-                display = Some(copy);
             }
             Screen::Action => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_actions(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.panel(),
                     self.runtime.action_index(),
                     &self.runtime.actor_name(),
                 );
-                display = Some(copy);
             }
             Screen::Item => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_items(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.panel(),
                     self.runtime.item_index(),
@@ -222,14 +226,10 @@ impl App {
                     &self.runtime.actor_name(),
                     self.runtime.notice(),
                 );
-                display = Some(copy);
             }
             Screen::Spell => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_name_list(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.panel(),
                     &format!(
@@ -244,13 +244,9 @@ impl App {
                         .collect::<Vec<_>>(),
                     self.runtime.item_index(),
                 );
-                draw_notice(&mut copy, self.runtime.session(), self.runtime.notice());
-                display = Some(copy);
+                draw_notice(&mut g, self.runtime.session(), self.runtime.notice());
             }
             Screen::Shop => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 let gold = self
                     .runtime
                     .session()
@@ -262,7 +258,7 @@ impl App {
                     format!("BUY  GOLD {gold}  SPACE TO SELL")
                 };
                 draw_name_list(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.panel(),
                     &title,
@@ -274,84 +270,67 @@ impl App {
                         .collect::<Vec<_>>(),
                     self.runtime.shop_index(),
                 );
-                draw_notice(&mut copy, self.runtime.session(), self.runtime.notice());
-                display = Some(copy);
+                draw_notice(&mut g, self.runtime.session(), self.runtime.notice());
             }
             Screen::Target => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 draw_targets(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.panel(),
                     self.runtime.target_index(),
                     &self.runtime.target_names(),
                 );
-                display = Some(copy);
             }
             Screen::Battle => {
-                let mut copy = self.runtime.session().frame.clone();
                 draw_battle(
-                    &mut copy,
+                    &mut g,
                     self.runtime.session(),
                     self.runtime.battle(),
                     self.runtime.battle_order_index(),
                     self.runtime.battle_orders(),
                 );
-                display = Some(copy);
             }
             Screen::Duel => {
-                if let Some(mut copy) = self.runtime.duel_frame() {
-                    draw_duel(&mut copy, self.runtime.session(), self.runtime.panel(), self.runtime.duel());
-                    display = Some(copy);
+                if duel_base {
+                    draw_duel(
+                        &mut g,
+                        self.runtime.session(),
+                        self.runtime.panel(),
+                        self.runtime.duel(),
+                    );
                 }
             }
             Screen::Dialogue => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
                 if let Some(dialogue) = self.runtime.dialogue() {
                     draw_dialogue(
-                        &mut copy,
+                        &mut g,
                         self.runtime.session(),
                         self.runtime.panel(),
                         &self.runtime.actor_name(),
                         dialogue,
                     );
                 }
-                display = Some(copy);
             }
             Screen::Menu => {
-                let mut copy = self.runtime.session().frame.clone();
-                draw_menu(&mut copy, self.runtime.session(), self.runtime.panel());
-                display = Some(copy);
+                draw_menu(&mut g, self.runtime.session(), self.runtime.panel());
             }
             Screen::GameLost => {
-                let mut copy = self.runtime.session().frame.clone();
-                draw_game_lost(&mut copy, self.runtime.session());
-                display = Some(copy);
+                draw_game_lost(&mut g, self.runtime.session());
             }
             Screen::MapMessage => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
-                draw_map_message(&mut copy, &self.runtime);
-                display = Some(copy);
+                draw_map_message(&mut g, &self.runtime);
             }
             Screen::Encounter => {
-                let mut copy = display
-                    .take()
-                    .unwrap_or_else(|| self.runtime.session().frame.clone());
-                draw_encounter(&mut copy, &self.runtime);
-                display = Some(copy);
+                draw_encounter(&mut g, &self.runtime);
             }
-            Screen::Room | Screen::Quit => {}
+            // Room, Quit and screens without overlay drawing.
+            _ => {}
         }
 
-        let session = self.runtime.session();
-        let frame = display.unwrap_or_else(|| session.frame.clone());
-        let palette = if matches!(
+        let frame = g.into_frame();
+        let palette = if let Some(intro) = self.runtime.intro() {
+            intro.palette().colors
+        } else if matches!(
             screen,
             Screen::Map | Screen::Travel | Screen::Encounter | Screen::MapMessage
         ) {
@@ -381,22 +360,14 @@ impl App {
         let Ok(mut buffer) = surface.buffer_mut() else {
             return;
         };
-        let out_w = size.width as usize;
-        let out_h = size.height as usize;
-        let sw = usize::from(src.width);
-        let sh = usize::from(src.height);
-        for y in 0..out_h {
-            let sy = y * sh / out_h;
-            for x in 0..out_w {
-                let sx = x * sw / out_w;
-                let index = usize::from(src.pixels[sy * sw + sx]);
-                let [r, g, b] = palette.get(index).copied().unwrap_or([0, 0, 0]);
-                let r = (f32::from(r) * fade) as u8;
-                let g = (f32::from(g) * fade) as u8;
-                let b = (f32::from(b) * fade) as u8;
-                buffer[y * out_w + x] = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
-            }
-        }
+        soe_video::present_nearest_xrgb(
+            src,
+            &palette,
+            fade,
+            size.width as usize,
+            size.height as usize,
+            &mut buffer,
+        );
         let _ = buffer.present();
     }
 }
@@ -485,6 +456,9 @@ impl ApplicationHandler for App {
                 if let Some(key) = runtime_key(event.physical_key) {
                     let events = self.runtime.handle_key(key);
                     self.apply(event_loop, events);
+                } else if self.runtime.screen() == Screen::Intro {
+                    // Any key skips the intro, mapped or not.
+                    self.runtime.skip_intro();
                 }
             }
             _ => {}
@@ -531,7 +505,7 @@ fn runtime_key(key: PhysicalKey) -> Option<Key> {
     }
 }
 
-fn wrap_text(font: &soe_engine::font::BitmapFont, text: &str, max_width: u32) -> Vec<String> {
+fn wrap_text(g: &Gfx, text: &str, max_width: u32) -> Vec<String> {
     let mut lines = Vec::new();
     for raw in text.split('\n') {
         let mut line = String::new();
@@ -541,7 +515,7 @@ fn wrap_text(font: &soe_engine::font::BitmapFont, text: &str, max_width: u32) ->
             } else {
                 format!("{line} {word}")
             };
-            if !line.is_empty() && font.text_width(&candidate) > max_width {
+            if !line.is_empty() && g.text_width(&candidate) > max_width {
                 lines.push(std::mem::take(&mut line));
                 line.push_str(word);
             } else {
@@ -558,50 +532,49 @@ fn wrap_text(font: &soe_engine::font::BitmapFont, text: &str, max_width: u32) ->
 /// Full-width stone window for list/text screens, or black without the
 /// sheet; returns the x where text starts.
 fn panel_or_fill(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     height: i32,
 ) -> i32 {
     match panel {
-        Some(panel) => draw_panel(frame, session, panel, 0, 0, 320, height).0,
+        Some(_) => g.panel(session, 0, 0, LOGICAL_WIDTH.into(), height).0,
         None => {
-            fill_rect(frame, 0, 0, 320, height as u16, 0);
+            g.fill(0, 0, LOGICAL_WIDTH, height as u16, 0);
             10
         }
     }
 }
 
 fn draw_story(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     story: Option<&HintBook>,
     panel: Option<&soe_video::PlanarImage>,
     page: usize,
 ) {
-    let ox = panel_or_fill(frame, session, panel, 96);
-    let Some(font) = session.font() else {
+    let ox = panel_or_fill(g, session, panel, 96);
+    if !g.has_font() {
         return;
-    };
+    }
     // The original blits glyphs in their atlas colours (`14b0:0af9`, flags
     // 0x46, no remap); a solid colour is only used on the black fallback.
     let color = if panel.is_some() { None } else { Some(7) };
-    font.draw_text(frame, ox + 2, 8, "CHRONICLE  H CLOSE  ARROWS PAGE", color);
+    g.text(ox + 2, 8, "CHRONICLE  H CLOSE  ARROWS PAGE", color);
     let Some(story) = story else {
-        font.draw_text(frame, ox + 2, 24, "NO HINT DATA", color);
+        g.text(ox + 2, 24, "NO HINT DATA", color);
         return;
     };
     if story.is_empty() {
-        font.draw_text(frame, ox + 2, 24, "NO HINT DATA", color);
+        g.text(ox + 2, 24, "NO HINT DATA", color);
         return;
     }
     let index = page % story.paragraphs.len();
-    let lines = wrap_text(font, &story.paragraphs[index].replace('\n', " "), 250);
+    let lines = wrap_text(g, &story.paragraphs[index].replace('\n', " "), 250);
     for (line, text) in lines.iter().take(7).enumerate() {
-        font.draw_text(frame, ox + 2, 22 + line as i32 * 10, text, color);
+        g.text(ox + 2, 22 + line as i32 * 10, text, color);
     }
-    font.draw_text(
-        frame,
+    g.text(
         240,
         8,
         &format!("{}/{}", index + 1, story.paragraphs.len()),
@@ -612,7 +585,7 @@ fn draw_story(
 /// Room action menu (`FUN_1ba8_4604`): a 250-wide window at (10, 5) with
 /// four columns of buttons drawn by `FUN_15b8_0461`/`FUN_1772_01ec`.
 fn draw_actions(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
@@ -623,50 +596,50 @@ fn draw_actions(
         "Bribe", "Attack",
     ];
     const COLUMNS: [i32; 4] = [3, 0x3a, 0x71, 0xa8];
-    let Some(font) = session.font() else {
+    if !g.has_font() {
         return;
-    };
-    let line = i32::from(font.height);
+    }
+    let line = g.atlas_height();
     let rows = [line + 6, 2 * line + 14, 3 * line + 22];
     let height = rows[2] + line + 0xd;
     let (ox, oy) = match panel {
-        Some(panel) => draw_panel(frame, session, panel, 8, 5, 0xfa + 0x20, height),
+        Some(_) => g.panel(session, 8, 5, 0xfa + 0x20, height),
         None => {
-            fill_rect(frame, 0, 0, 320, height as u16 + 5, 0);
+            g.fill(0, 0, LOGICAL_WIDTH, height as u16 + 5, 0);
             (8 + 0x1f, 10)
         }
     };
-    font.draw_text(frame, ox, oy, &format!("Select an action for {actor}:"), None);
+    g.text(ox, oy, &format!("Select an action for {actor}:"), None);
     let label_width = ACTIONS
         .iter()
-        .map(|label| font.text_width(label))
+        .map(|label| g.text_width(label))
         .max()
         .unwrap_or(0) as u16;
     for (index, action) in ACTIONS.iter().enumerate() {
         let x = ox + COLUMNS[index % 4];
         let y = oy + rows[index / 4];
-        font.draw_text(frame, x, y, action, None);
-        if let (Some(style), Some(sheet)) = (session.window_style(), panel) {
+        g.text(x, y, action, None);
+        if let (Some(style), Some(_)) = (session.window_style(), panel) {
             let ops = style.button(x as i16, y as i16, label_width, index == selected);
-            draw_window_ops(frame, sheet, 0, 0, &ops);
+            g.window_ops(0, 0, &ops);
         }
     }
 }
 
 fn draw_targets(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
     targets: &[String],
 ) {
-    let ox = panel_or_fill(frame, session, panel, 96);
-    let Some(font) = session.font() else {
+    let ox = panel_or_fill(g, session, panel, 96);
+    if !g.has_font() {
         return;
-    };
-    font.draw_text(frame, ox, 6, "PLEASE SELECT:", None);
+    }
+    g.text(ox, 6, "PLEASE SELECT:", None);
     if targets.is_empty() {
-        font.draw_text(frame, ox + 2, 26, "NO TARGETS", None);
+        g.text(ox + 2, 26, "NO TARGETS", None);
         return;
     }
     let selected = selected.min(targets.len() - 1);
@@ -677,8 +650,7 @@ fn draw_targets(
             break;
         };
         let marker = if index == selected { "*" } else { " " };
-        font.draw_text(
-            frame,
+        g.text(
             ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", target.to_ascii_uppercase()),
@@ -688,7 +660,7 @@ fn draw_targets(
 }
 
 fn draw_items(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     selected: usize,
@@ -697,10 +669,10 @@ fn draw_items(
     actor: &str,
     notice: &str,
 ) {
-    let ox = panel_or_fill(frame, session, panel, 96);
-    let Some(font) = session.font() else {
+    let ox = panel_or_fill(g, session, panel, 96);
+    if !g.has_font() {
         return;
-    };
+    }
     let name = actor.to_ascii_uppercase();
     let verb = match action {
         0 => "PICK UP",
@@ -709,11 +681,11 @@ fn draw_items(
         9 => "GIVE",
         _ => "SELECT",
     };
-    font.draw_text(frame, ox, 6, &format!("WHAT SHALL {name} {verb}?"), None);
+    g.text(ox, 6, &format!("WHAT SHALL {name} {verb}?"), None);
     if items.is_empty() {
-        font.draw_text(frame, ox + 2, 26, "NOTHING", None);
+        g.text(ox + 2, 26, "NOTHING", None);
         if !notice.is_empty() {
-            font.draw_text(frame, ox + 2, 82, &truncate(notice, 44), None);
+            g.text(ox + 2, 82, &truncate(notice, 44), None);
         }
         return;
     }
@@ -724,8 +696,7 @@ fn draw_items(
             break;
         };
         let marker = if index == selected { "*" } else { " " };
-        font.draw_text(
-            frame,
+        g.text(
             ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", item.to_ascii_uppercase()),
@@ -733,25 +704,25 @@ fn draw_items(
         );
     }
     if !notice.is_empty() {
-        font.draw_text(frame, ox + 2, 86, &truncate(notice, 44), None);
+        g.text(ox + 2, 86, &truncate(notice, 44), None);
     }
 }
 
 fn draw_name_list(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     title: &str,
     names: &[String],
     selected: usize,
 ) {
-    let ox = panel_or_fill(frame, session, panel, 96);
-    let Some(font) = session.font() else {
+    let ox = panel_or_fill(g, session, panel, 96);
+    if !g.has_font() {
         return;
-    };
-    font.draw_text(frame, ox, 6, title, None);
+    }
+    g.text(ox, 6, title, None);
     if names.is_empty() {
-        font.draw_text(frame, ox + 2, 26, "NOTHING", None);
+        g.text(ox + 2, 26, "NOTHING", None);
         return;
     }
     let page = selected.min(names.len() - 1) / 8;
@@ -761,8 +732,7 @@ fn draw_name_list(
             break;
         };
         let marker = if index == selected { "*" } else { " " };
-        font.draw_text(
-            frame,
+        g.text(
             ox + 2,
             24 + row as i32 * 8,
             &format!("{marker}{}", name.to_ascii_uppercase()),
@@ -771,41 +741,40 @@ fn draw_name_list(
     }
 }
 
-fn draw_notice(frame: &mut IndexedFrame, session: &Session, notice: &str) {
+fn draw_notice(g: &mut Gfx, _session: &Session, notice: &str) {
     if notice.is_empty() {
         return;
     }
-    let Some(font) = session.font() else {
+    if !g.has_font() {
         return;
-    };
-    fill_rect(frame, 0, 96, 320, 16, 0);
-    font.draw_text(frame, 10, 99, &truncate(notice, 44), Some(7));
+    }
+    g.fill(0, 96, LOGICAL_WIDTH, 16, 0);
+    g.text(10, 99, &truncate(notice, 44), Some(7));
 }
 
 fn draw_dialogue(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     actor: &str,
     dialogue: &soe_engine::interaction::Dialogue,
 ) {
-    let ox = panel_or_fill(frame, session, panel, 112);
-    let Some(font) = session.font() else {
+    let ox = panel_or_fill(g, session, panel, 112);
+    if !g.has_font() {
         return;
-    };
+    }
     let speaker = soe_engine::interaction::character_name(&session.state, dialogue.speaker);
     let header = format!("{speaker} speaks to {actor}.").to_ascii_uppercase();
-    font.draw_text(frame, ox + 2, 8, &header, None);
-    let lines = wrap_text(font, &dialogue.text, 250);
+    g.text(ox + 2, 8, &header, None);
+    let lines = wrap_text(g, &dialogue.text, 250);
     for (line, text) in lines.iter().take(7).enumerate() {
-        font.draw_text(frame, ox + 2, 22 + line as i32 * 10, text, None);
+        g.text(ox + 2, 22 + line as i32 * 10, text, None);
     }
     if dialogue.has_choices() {
         let y = 94;
         for (index, choice) in dialogue.choices.iter().take(2).enumerate() {
             let marker = if index == dialogue.selected { "*" } else { " " };
-            font.draw_text(
-                frame,
+            g.text(
                 ox + 4 + index as i32 * 120,
                 y,
                 &format!("{marker}{}", choice.label.to_ascii_uppercase()),
@@ -815,15 +784,15 @@ fn draw_dialogue(
     }
 }
 
-fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], selected: usize) {
-    fill_rect(frame, 0, 0, 320, 200, 0);
-    let Some(font) = session.font() else {
+fn draw_saves(g: &mut Gfx, _session: &Session, files: &[String], selected: usize) {
+    g.fill(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, 0);
+    if !g.has_font() {
         return;
-    };
-    font.draw_text(frame, 8, 6, "SAVE / LOAD", Some(8));
-    font.draw_text(frame, 8, 20, "ENTER LOAD  F5 QUICK SAVE  S CLOSE", Some(8));
+    }
+    g.text(8, 6, "SAVE / LOAD", Some(8));
+    g.text(8, 20, "ENTER LOAD  F5 QUICK SAVE  S CLOSE", Some(8));
     if files.is_empty() {
-        font.draw_text(frame, 8, 40, "NO .SAV FILES", Some(8));
+        g.text(8, 40, "NO .SAV FILES", Some(8));
         return;
     }
     let selected = selected.min(files.len() - 1);
@@ -834,16 +803,9 @@ fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], sel
             break;
         };
         let marker = if index == selected { "*" } else { " " };
-        font.draw_text(
-            frame,
-            8,
-            36 + row as i32 * 12,
-            &format!("{marker}{name}"),
-            Some(8),
-        );
+        g.text(8, 36 + row as i32 * 12, &format!("{marker}{name}"), Some(8));
     }
-    font.draw_text(
-        frame,
+    g.text(
         220,
         188,
         &format!("PAGE {}/{}", page + 1, files.len().div_ceil(13)),
@@ -853,70 +815,65 @@ fn draw_saves(frame: &mut IndexedFrame, session: &Session, files: &[String], sel
 
 /// Map message window (`FUN_1772_000e` from the arrival callback): stone
 /// window at (10, 10) with the text; any key or click continues.
-fn draw_map_message(frame: &mut IndexedFrame, runtime: &Runtime) {
+fn draw_map_message(g: &mut Gfx, runtime: &Runtime) {
     let session = runtime.session();
-    let (Some(font), Some(text)) = (session.font(), runtime.map_message()) else {
+    let (true, Some(text)) = (g.has_font(), runtime.map_message()) else {
         return;
     };
     let lines: Vec<&str> = text.split('\n').collect();
     let height = 10 + 10 * lines.len() as i32;
     let (ox, oy) = match runtime.panel() {
-        Some(panel) => draw_panel(frame, session, panel, 8, 10, 0x11d + 0x20, height),
+        Some(_) => g.panel(session, 8, 10, 0x11d + 0x20, height),
         None => {
-            fill_rect(frame, 0, 0, 320, height as u16 + 10, 0);
+            g.fill(0, 0, LOGICAL_WIDTH, height as u16 + 10, 0);
             (16, 15)
         }
     };
     for (row, line) in lines.iter().enumerate() {
-        font.draw_text(frame, ox, oy + row as i32 * 10, line, None);
+        g.text(ox, oy + row as i32 * 10, line, None);
     }
 }
 
 /// Map encounter dialog (`FUN_2920_0a12` -> `FUN_1772_000e`): stone window at
 /// (10, 5), the sentence, then the outlined buttons.
-fn draw_encounter(frame: &mut IndexedFrame, runtime: &Runtime) {
+fn draw_encounter(g: &mut Gfx, runtime: &Runtime) {
     let session = runtime.session();
-    let Some(font) = session.font() else {
+    if !g.has_font() {
         return;
-    };
+    }
     let buttons = runtime.encounter_buttons();
     let rects = runtime.encounter_button_rects();
     let selected = runtime.encounter_selection();
     let height = rects.last().map_or(40, |&(_, y, _)| i32::from(y) + 12);
     let (ox, oy) = match runtime.panel() {
-        Some(panel) => draw_panel(frame, session, panel, 8, 5, 0x10e + 0x20, height),
+        Some(_) => g.panel(session, 8, 5, 0x10e + 0x20, height),
         None => {
-            fill_rect(frame, 0, 0, 320, height as u16 + 5, 0);
+            g.fill(0, 0, LOGICAL_WIDTH, height as u16 + 5, 0);
             (16, 10)
         }
     };
     for (line, text) in runtime.encounter_text().split('\n').enumerate() {
-        font.draw_text(frame, ox, oy + line as i32 * 10, text, None);
+        g.text(ox, oy + line as i32 * 10, text, None);
     }
     let label_width = buttons
         .iter()
-        .map(|label| font.text_width(label))
+        .map(|label| g.text_width(label))
         .max()
         .unwrap_or(0) as u16;
     for (index, (label, &(x, y, _))) in buttons.iter().zip(&rects).enumerate() {
         let (x, y) = (i32::from(x) + 3, i32::from(y) + 2);
-        font.draw_text(frame, x, y, label, None);
-        if let (Some(style), Some(sheet)) = (session.window_style(), runtime.panel()) {
+        g.text(x, y, label, None);
+        if let (Some(style), Some(_)) = (session.window_style(), runtime.panel()) {
             let ops = style.button(x as i16, y as i16, label_width, index == selected);
-            draw_window_ops(frame, sheet, 0, 0, &ops);
+            g.window_ops(0, 0, &ops);
         }
     }
 }
 
-fn draw_world_map(
-    frame: &mut IndexedFrame,
-    session: &Session,
-    selected: Option<&str>,
-    current: Option<&str>,
-) {
-    let Some(font) = session.font() else {
+fn draw_world_map(g: &mut Gfx, _session: &Session, selected: Option<&str>, current: Option<&str>) {
+    if !g.has_font() {
         return;
-    };
+    }
     let selected = selected
         .filter(|name| !name.is_empty())
         .map_or_else(|| "NO LOCATIONS".to_string(), str::to_ascii_uppercase);
@@ -928,130 +885,46 @@ fn draw_world_map(
     // The bottom strip carries the region name as part of the frame art
     // (INTF#501), so the port's location label sits on the empty top strip,
     // in the font's own colours like the original's frame text.
-    let width = i32::try_from(font.text_width(&banner)).unwrap_or(0);
-    font.draw_text(frame, (160 - width / 2).clamp(24, 296), 3, &banner, None);
+    let width = i32::try_from(g.text_width(&banner)).unwrap_or(0);
+    g.text((160 - width / 2).clamp(24, 296), 3, &banner, None);
 }
 
-/// Stone dialog window (`FUN_2036_0009`) drawn at `(x, y)` covering roughly
-/// `width` x `height`; returns the window's content origin in frame space.
-fn draw_panel(
-    frame: &mut IndexedFrame,
-    session: &Session,
-    sheet: &soe_video::PlanarImage,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-) -> (i32, i32) {
-    let Some(style) = session.window_style() else {
-        fill_rect(frame, x as u16, y as u16, width as u16, height as u16, 5);
-        return (x + 0x1f, y + 5);
-    };
-    // FUN_1772_000e passes `(width + 7) & 0xfff8` for the inner width; the
-    // builder adds 0x20 for the two side columns.
-    let inner = ((width - 0x20).max(8) as u16 + 7) & 0xfff8;
-    let layout = style.layout(inner, height as u16, (x as u32) << 16 | y as u32);
-    draw_window_ops(frame, sheet, x, y, &layout.ops);
-    (x + i32::from(layout.content_x), y + i32::from(layout.content_y))
-}
-
-/// Execute window drawing operations against the `TITLE.RES#300` sheet.
-fn draw_window_ops(
-    frame: &mut IndexedFrame,
-    sheet: &soe_video::PlanarImage,
-    x: i32,
-    y: i32,
-    ops: &[WindowOp],
-) {
-    for op in ops {
-        match *op {
-            WindowOp::Fill {
-                x: fx,
-                y: fy,
-                width,
-                height,
-                color,
-            } => {
-                for py in 0..i32::from(height) {
-                    for px in 0..i32::from(width) {
-                        let (dx, dy) = (x + i32::from(fx) + px, y + i32::from(fy) + py);
-                        if dx >= 0 && dy >= 0 {
-                            frame.set_pixel(dx as u16, dy as u16, color);
-                        }
-                    }
-                }
-            }
-            WindowOp::Piece {
-                src_x,
-                src_y,
-                width,
-                height,
-                x: px,
-                y: py,
-                mirror,
-            } => {
-                let sw = i32::from(sheet.width);
-                for row in 0..i32::from(height) {
-                    let sy = i32::from(src_y) + row;
-                    if sy >= i32::from(sheet.height) {
-                        break;
-                    }
-                    for col in 0..i32::from(width) {
-                        let sx = if mirror {
-                            i32::from(src_x) + i32::from(width) - 1 - col
-                        } else {
-                            i32::from(src_x) + col
-                        };
-                        if !(0..sw).contains(&sx) {
-                            continue;
-                        }
-                        let (dx, dy) = (x + i32::from(px) + col, y + i32::from(py) + row);
-                        if dx >= 0 && dy >= 0 {
-                            frame.set_pixel(dx as u16, dy as u16, sheet.indices[(sy * sw + sx) as usize]);
-                        }
-                    }
-                }
-            }
-        }
+fn draw_menu(g: &mut Gfx, session: &Session, panel: Option<&soe_video::PlanarImage>) {
+    g.fill(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, 0);
+    if panel.is_some() {
+        g.panel(session, 20, 40, 280, 96);
     }
-}
-
-fn draw_menu(frame: &mut IndexedFrame, session: &Session, panel: Option<&soe_video::PlanarImage>) {
-    fill_rect(frame, 0, 0, 320, 200, 0);
-    if let Some(panel) = panel {
-        draw_panel(frame, session, panel, 20, 40, 280, 96);
+    if !g.has_font() {
+        return;
     }
-    let Some(font) = session.font() else {
-        return;
-    };
-    font.draw_text(frame, 52, 58, "SPIRIT OF EXCALIBUR", Some(8));
-    font.draw_text(frame, 58, 78, "ENTER CONTINUE", None);
-    font.draw_text(frame, 70, 92, "ESC QUIT", None);
+    g.text(52, 58, "SPIRIT OF EXCALIBUR", Some(8));
+    g.text(58, 78, "ENTER CONTINUE", None);
+    g.text(70, 92, "ESC QUIT", None);
 }
 
-fn draw_game_lost(frame: &mut IndexedFrame, session: &Session) {
-    fill_rect(frame, 0, 0, 320, 200, 0);
-    let Some(font) = session.font() else {
+fn draw_game_lost(g: &mut Gfx, _session: &Session) {
+    g.fill(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, 0);
+    if !g.has_font() {
         return;
-    };
-    font.draw_text(frame, 126, 90, "GAMELOST", Some(8));
-    font.draw_text(frame, 104, 110, "PRESS ENTER TO QUIT", Some(7));
+    }
+    g.text(126, 90, "GAMELOST", Some(8));
+    g.text(104, 110, "PRESS ENTER TO QUIT", Some(7));
 }
 
-fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, notice: &str) {
-    fill_rect(frame, 10, 18, 300, 168, 0);
-    fill_rect(frame, 10, 18, 300, 1, 7);
-    fill_rect(frame, 10, 185, 300, 1, 7);
-    fill_rect(frame, 10, 18, 1, 168, 7);
-    fill_rect(frame, 309, 18, 1, 168, 7);
-    let Some(font) = session.font() else {
+fn draw_status(g: &mut Gfx, session: &Session, selected: usize, notice: &str) {
+    g.fill(10, 18, 300, 168, 0);
+    g.fill(10, 18, 300, 1, 7);
+    g.fill(10, 185, 300, 1, 7);
+    g.fill(10, 18, 1, 168, 7);
+    g.fill(309, 18, 1, 168, 7);
+    if !g.has_font() {
         return;
-    };
-    font.draw_text(frame, 16, 22, "ROUND TABLE", Some(8));
-    font.draw_text(frame, 190, 22, "UP/DN KNIGHT  ENTER ITEMS", Some(8));
-    font.draw_text(frame, 16, 38, "NAME", Some(8));
-    font.draw_text(frame, 112, 38, "HP HT MV COM ARM NOB FTH GOLD", Some(8));
-    fill_rect(frame, 16, 47, 286, 1, 7);
+    }
+    g.text(16, 22, "ROUND TABLE", Some(8));
+    g.text(190, 22, "UP/DN KNIGHT  ENTER ITEMS", Some(8));
+    g.text(16, 38, "NAME", Some(8));
+    g.text(112, 38, "HP HT MV COM ARM NOB FTH GOLD", Some(8));
+    g.fill(16, 47, 286, 1, 7);
 
     let indices: Vec<usize> = session
         .state
@@ -1062,7 +935,7 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, not
         .map(|(index, _)| index)
         .collect();
     if indices.is_empty() {
-        font.draw_text(frame, 16, 56, "NO KNIGHTS", Some(8));
+        g.text(16, 56, "NO KNIGHTS", Some(8));
         return;
     }
     let position = indices
@@ -1080,33 +953,20 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, not
         };
         let marker = if index == position { "*" } else { " " };
         let y = 51 + row as i32 * 10;
-        font.draw_text(
-            frame,
+        g.text(
             16,
             y,
             &format!("{marker}{}", sheet.name.to_ascii_uppercase()),
             Some(8),
         );
-        font.draw_text(frame, 112, y, &format!("{:2}", sheet.health), Some(8));
-        font.draw_text(frame, 134, y, &format!("{:2}", sheet.hits), Some(8));
-        font.draw_text(frame, 152, y, &format!("{:2}", sheet.movement), Some(8));
-        font.draw_text(
-            frame,
-            170,
-            y,
-            &format!("{:3}", sheet.effective_combat),
-            Some(8),
-        );
-        font.draw_text(
-            frame,
-            194,
-            y,
-            &format!("{:3}", sheet.effective_armor),
-            Some(8),
-        );
-        font.draw_text(frame, 220, y, &format!("{:3}", sheet.nobility), Some(8));
-        font.draw_text(frame, 244, y, &format!("{:3}", sheet.faith), Some(8));
-        font.draw_text(frame, 268, y, &format!("{:4}", sheet.gold), Some(8));
+        g.text(112, y, &format!("{:2}", sheet.health), Some(8));
+        g.text(134, y, &format!("{:2}", sheet.hits), Some(8));
+        g.text(152, y, &format!("{:2}", sheet.movement), Some(8));
+        g.text(170, y, &format!("{:3}", sheet.effective_combat), Some(8));
+        g.text(194, y, &format!("{:3}", sheet.effective_armor), Some(8));
+        g.text(220, y, &format!("{:3}", sheet.nobility), Some(8));
+        g.text(244, y, &format!("{:3}", sheet.faith), Some(8));
+        g.text(268, y, &format!("{:4}", sheet.gold), Some(8));
     }
 
     let sheet = session.state.character_sheet(selected);
@@ -1128,19 +988,19 @@ fn draw_status(frame: &mut IndexedFrame, session: &Session, selected: usize, not
             (gear, spells)
         },
     );
-    font.draw_text(frame, 16, 136, "GEAR:", Some(8));
-    font.draw_text(frame, 56, 136, &truncate(&gear, 34), Some(8));
-    font.draw_text(frame, 16, 150, "MAGIC:", Some(8));
-    font.draw_text(frame, 62, 150, &truncate(&spells, 33), Some(8));
+    g.text(16, 136, "GEAR:", Some(8));
+    g.text(56, 136, &truncate(&gear, 34), Some(8));
+    g.text(16, 150, "MAGIC:", Some(8));
+    g.text(62, 150, &truncate(&spells, 33), Some(8));
     if !notice.is_empty() {
-        font.draw_text(frame, 16, 168, &truncate(notice, 38), Some(7));
+        g.text(16, 168, &truncate(notice, 38), Some(7));
     }
 }
 
 /// The duel's battle panel over the field scene, laid out like the
 /// original's: the two sides' champions and the latest message.
 fn draw_duel(
-    frame: &mut IndexedFrame,
+    g: &mut Gfx,
     session: &Session,
     panel: Option<&soe_video::PlanarImage>,
     duel: Option<&soe_engine::duel::Duel>,
@@ -1148,37 +1008,42 @@ fn draw_duel(
     let Some(duel) = duel else {
         return;
     };
-    panel_or_fill(frame, session, panel, 86);
-    let Some(font) = session.font() else {
+    panel_or_fill(g, session, panel, 86);
+    if !g.has_font() {
         return;
+    }
+    let name = |id: u8| {
+        session
+            .dgroup()
+            .map(|_| soe_engine::names::display_name(duel.ds(), id))
+            .unwrap_or_default()
     };
-    let name = |id: u8| session.dgroup().map(|_| soe_engine::names::display_name(duel.ds(), id)).unwrap_or_default();
-    font.draw_text(frame, 78, 6, "ROUND TABLE...", None);
-    font.draw_text(frame, 84, 15, &name(duel.champions[0]), None);
-    font.draw_text(frame, 190, 6, "FOES...", None);
-    font.draw_text(frame, 196, 15, &name(duel.champions[1]), None);
+    g.text(78, 6, "ROUND TABLE...", None);
+    g.text(84, 15, &name(duel.champions[0]), None);
+    g.text(190, 6, "FOES...", None);
+    g.text(196, 15, &name(duel.champions[1]), None);
     if let Some(message) = duel.messages.last() {
-        font.draw_text(frame, 24, 70, message, None);
+        g.text(24, 70, message, None);
     }
     if duel.finished() {
-        font.draw_text(frame, 112, 50, "PRESS ANY KEY", None);
+        g.text(112, 50, "PRESS ANY KEY", None);
     }
 }
 
 fn draw_battle(
-    frame: &mut IndexedFrame,
-    session: &Session,
+    g: &mut Gfx,
+    _session: &Session,
     battle: Option<&Battle>,
     selected: usize,
     orders: &[Order],
 ) {
-    fill_rect(frame, 0, 0, 320, 200, 7);
-    let Some(font) = session.font() else {
+    g.fill(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT, 7);
+    if !g.has_font() {
         return;
-    };
-    fill_rect(frame, 0, 0, 320, 13, 0);
+    }
+    g.fill(0, 0, LOGICAL_WIDTH, 13, 0);
     let Some(battle) = battle else {
-        font.draw_text(frame, 118, 90, "NO BATTLE", None);
+        g.text(118, 90, "NO BATTLE", None);
         return;
     };
 
@@ -1187,16 +1052,15 @@ fn draw_battle(
     } else {
         ("ROUND TABLE...", "FOES...")
     };
-    font.draw_text(frame, 4, 3, left_title, Some(7));
-    font.draw_text(frame, 132, 3, &format!("ROUND {}", battle.round), Some(7));
-    font.draw_text(frame, 232, 3, right_title, Some(7));
+    g.text(4, 3, left_title, Some(7));
+    g.text(132, 3, &format!("ROUND {}", battle.round), Some(7));
+    g.text(232, 3, right_title, Some(7));
 
     for (row, unit) in battle.player.iter().take(12).enumerate() {
         let y = 18 + row as i32 * 8;
         let color = if unit.is_routed() { 4 } else { 0 };
         let marker = if unit.is_routed() { "x" } else { " " };
-        font.draw_text(
-            frame,
+        g.text(
             4,
             y,
             &format!("{marker}{}", truncate(&unit.display(), 14)),
@@ -1207,8 +1071,7 @@ fn draw_battle(
         let y = 18 + row as i32 * 8;
         let color = if unit.is_routed() { 4 } else { 0 };
         let marker = if unit.is_routed() { "x" } else { " " };
-        font.draw_text(
-            frame,
+        g.text(
             226,
             y,
             &format!("{marker}{}", truncate(&unit.display(), 12)),
@@ -1219,15 +1082,14 @@ fn draw_battle(
     for (index, order) in orders.iter().enumerate() {
         let y = 18 + index as i32 * 10;
         if index == selected {
-            fill_rect(frame, 118, (y - 1) as u16, 90, 9, 0);
-            font.draw_text(frame, 122, y, order.label(), Some(7));
+            g.fill(118, (y - 1) as u16, 90, 9, 0);
+            g.text(122, y, order.label(), Some(7));
         } else {
-            font.draw_text(frame, 122, y, order.label(), None);
+            g.text(122, y, order.label(), None);
         }
     }
 
-    font.draw_text(
-        frame,
+    g.text(
         118,
         90,
         &format!(
@@ -1238,18 +1100,18 @@ fn draw_battle(
         None,
     );
 
-    fill_rect(frame, 118, 102, 196, 56, 2);
-    fill_rect(frame, 118, 102, 196, 1, 0);
-    fill_rect(frame, 118, 157, 196, 1, 0);
-    fill_rect(frame, 118, 102, 1, 56, 0);
-    fill_rect(frame, 313, 102, 1, 56, 0);
+    g.fill(118, 102, 196, 56, 2);
+    g.fill(118, 102, 196, 1, 0);
+    g.fill(118, 157, 196, 1, 0);
+    g.fill(118, 102, 1, 56, 0);
+    g.fill(313, 102, 1, 56, 0);
     for (index, unit) in battle.player.iter().take(12).enumerate() {
         if unit.is_routed() {
             continue;
         }
         let x = 126 + (index % 3) as u16 * 7;
         let y = 108 + (index / 3) as u16 * 11;
-        fill_rect(frame, x, y, 2, 3, 8);
+        g.fill(x, y, 2, 3, 8);
     }
     for (index, unit) in battle.foe.iter().take(12).enumerate() {
         if unit.is_routed() {
@@ -1257,22 +1119,16 @@ fn draw_battle(
         }
         let x = 300 - (index % 3) as u16 * 7;
         let y = 108 + (index / 3) as u16 * 11;
-        fill_rect(frame, x, y, 2, 3, 12);
+        g.fill(x, y, 2, 3, 12);
     }
 
-    fill_rect(frame, 0, 163, 320, 37, 0);
+    g.fill(0, 163, LOGICAL_WIDTH, 37, 0);
     let start = battle.messages.len().saturating_sub(3);
     for (row, message) in battle.messages[start..].iter().enumerate() {
-        font.draw_text(
-            frame,
-            6,
-            167 + row as i32 * 10,
-            &truncate(message, 50),
-            Some(7),
-        );
+        g.text(6, 167 + row as i32 * 10, &truncate(message, 50), Some(7));
     }
     if let Some(outcome) = battle.outcome {
-        font.draw_text(frame, 250, 3, outcome.label(), Some(12));
+        g.text(250, 3, outcome.label(), Some(12));
     }
 }
 
@@ -1283,14 +1139,6 @@ fn truncate(text: &str, max: usize) -> String {
         let mut out: String = text.chars().take(max.saturating_sub(3)).collect();
         out.push_str("...");
         out
-    }
-}
-
-fn fill_rect(frame: &mut IndexedFrame, x: u16, y: u16, width: u16, height: u16, color: u8) {
-    for py in y..y.saturating_add(height) {
-        for px in x..x.saturating_add(width) {
-            frame.set_pixel(px, py, color);
-        }
     }
 }
 
@@ -1306,6 +1154,18 @@ fn load_record_image(path: &Path, id: u16) -> Result<soe_video::PlanarImage> {
         .with_context(|| format!("record {id} not found in {}", path.display()))?;
     decode_planar(&file.decode(record)?)
         .with_context(|| format!("decoding record {id} from {}", path.display()))
+}
+
+/// The intro's TITLE.RES images and the `DS:1FD9` table; `None` without them.
+fn load_intro(game_dir: &Path, session: &Session) -> Option<soe_engine::intro::Intro> {
+    let file = soe_res::ResFile::parse(std::fs::read(game_dir.join("RES32").join("TITLE.RES")).ok()?).ok()?;
+    let mut images = std::collections::HashMap::new();
+    for id in soe_engine::intro::image_ids() {
+        let record = file.records().into_iter().find(|record| record.id == id)?;
+        images.insert(id, decode_planar(&file.decode(record).ok()?).ok()?);
+    }
+    let table = session.palettes().table(soe_engine::palette::TITLE_DS)?;
+    Some(soe_engine::intro::Intro::new(images, table, [0; 96]))
 }
 
 fn load_map(game_dir: &Path) -> Result<Option<WorldMap>> {
@@ -1356,6 +1216,13 @@ fn main() -> Result<()> {
         window::SHEET_ID,
     )
     .ok();
+    let ui = UiAssets::new(
+        load_record_image(&game_dir.join("RES32").join("TITLE.RES"), 200).ok(),
+        std::fs::read(&exe)
+            .ok()
+            .and_then(|bytes| soe_engine::font::BitmapFont::metrics_from_excal(&bytes)),
+        panel.clone(),
+    );
     let story = HintBook::load(game_dir.join("HINT.RES")).ok();
     let mut runtime = Runtime::new(session, scene_ids, start, game_dir.clone(), exe.clone())
         .with_assets(map, panel, story);
@@ -1391,6 +1258,17 @@ fn main() -> Result<()> {
     }
     if args.iter().any(|arg| arg == "--paused") {
         runtime.open_screen(Screen::Pause);
+    }
+    // The start-up intro (`FUN_2c74_0006`), unless a start screen is asked for.
+    const START_FLAGS: [&str; 16] = [
+        "--scene", "--map", "--status", "--story", "--travel", "--saves", "--actions", "--items",
+        "--spells", "--shop", "--targets", "--paused", "--battle", "--duel", "--travel-to", "--no-intro",
+    ];
+    let mut start_events = Vec::new();
+    if !args.iter().any(|arg| START_FLAGS.contains(&arg.as_str())) {
+        if let Some(intro) = load_intro(&game_dir, runtime.session()) {
+            start_events = runtime.start_intro(intro);
+        }
     }
     if args.iter().any(|arg| arg == "--battle") {
         if !runtime.start_demo_battle() {
@@ -1434,23 +1312,26 @@ fn main() -> Result<()> {
         .find(|pair| pair[0] == "--screenshot")
         .map(|pair| PathBuf::from(&pair[1]))
     {
-        let app = App::new(runtime);
+        let app = App::new(runtime, ui);
         let (frame, palette) = app.compose_frame();
         return write_screenshot(&path, &frame, &palette);
     }
 
     let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
     let audio = audio::AudioPlayer::new();
-    if let (Some(player), Some(library)) = (&audio, &music) {
-        if let Some(song) = library.map() {
-            player.play_score(&song.score);
-        }
+    let song = start_events.iter().find_map(|event| match event {
+        RuntimeEvent::Music(name) => music.as_ref().and_then(|m| m.find(name)),
+        _ => None,
+    });
+    if let (Some(player), Some(song)) = (&audio, song.or_else(|| music.as_ref().and_then(MusicLibrary::map))) {
+        player.play_score(&song.score);
     }
 
     let event_loop = EventLoop::new().context("creating event loop")?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App::new(runtime);
+    let mut app = App::new(runtime, ui);
     app.audio = audio;
+    app.music = music;
     event_loop.run_app(&mut app).context("running window")?;
     Ok(())
 }
@@ -1461,8 +1342,8 @@ fn write_screenshot(path: &Path, frame: &IndexedFrame, palette: &[[u8; 3]]) -> R
     for (index, color) in palette.iter().enumerate().take(256) {
         pal[index * 3..index * 3 + 3].copy_from_slice(color);
     }
-    let file = std::fs::File::create(path)
-        .with_context(|| format!("creating {}", path.display()))?;
+    let file =
+        std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
     let mut encoder = png::Encoder::new(
         std::io::BufWriter::new(file),
         u32::from(frame.width),
