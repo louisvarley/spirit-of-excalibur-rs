@@ -1264,10 +1264,16 @@ impl Runtime {
             mode |= 8;
         }
         ds[0x9c56..0x9c58].copy_from_slice(&mode.to_le_bytes());
-        // The field image follows the terrain under side one's leader
-        // (FUN_15b8_1b1b, DS:2B5C); until the terrain is passed in, class 0
-        // gives the default field, 0x26C.
-        let battle = ArmyBattle::start(&ds, self.session.resources_mut(), 0, seed);
+        // FUN_20b5_085b picks the field image by the terrain class
+        // (DS:2B5C) under side one's leader (FUN_15b8_1b1b).
+        let class = self.map.as_ref().map_or(0, |map| {
+            let at = 0x2c5e + usize::from(mine[0]) * 0x38;
+            let x = i16::from_le_bytes([ds[at + 0x0e], ds[at + 0x0f]]);
+            let y = i16::from_le_bytes([ds[at + 0x10], ds[at + 0x11]]);
+            let t = crate::travel::terrain_at(map.tilemap(), worldmap::TILES_W as u16, x, y);
+            ds[0x2b5c + usize::from(t)]
+        });
+        let battle = ArmyBattle::start(&ds, self.session.resources_mut(), class, seed);
         self.battle = Some(battle);
         self.battle_accum = Duration::ZERO;
         self.battle_unit = 0;

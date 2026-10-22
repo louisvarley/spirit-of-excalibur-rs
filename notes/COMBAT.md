@@ -134,8 +134,7 @@ so those are not compared after one.
 scene frame per 60 Hz tick, so tokens walk by their scripts and handler 15
 calls `FUN_2449_12de`. Approximations: a round body runs in one go and its
 message waits are then replayed two seconds apart (strength changes appear
-when the round starts); the random generator is a stand-in; the terrain
-under the leader is not passed in yet (field 0x26C); the "fall back"
+when the round starts); the random generator is a stand-in; the "fall back"
 question answers yes; the order menu's "Select an option" step and the
 panel's mark sprites are not drawn. `Runtime::start_battle` and the map's
 army confrontations open it; `soe-play --battle` opens the demo battle.
