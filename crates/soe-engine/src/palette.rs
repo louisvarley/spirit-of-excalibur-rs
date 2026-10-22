@@ -31,6 +31,7 @@ pub const MAP_DS: usize = 0x20f9;
 pub const UI_DS: usize = 0x2159;
 pub const MAP_REGION_DS: usize = 0x2039;
 pub const PALETTE_BYTES: usize = 96;
+pub const TITLE_DS: usize = 0x1fd9;
 const RAW_START: usize = 0x1f79;
 const RAW_END: usize = 0x23e7;
 
@@ -200,6 +201,14 @@ impl PaletteSet {
     }
 
     /// One 3-byte DGROUP entry at `DS ds`.
+    /// The raw 96-byte (4-bit RGB) table at `DS ds`, e.g. the title table
+    /// `DS 0x1FD9` that `FUN_2c74_0006` selects through `DS:8E5D`.
+    #[must_use]
+    pub fn table(&self, ds: usize) -> Option<[u8; PALETTE_BYTES]> {
+        let at = ds.checked_sub(RAW_START)?;
+        self.raw.get(at..at + PALETTE_BYTES)?.try_into().ok()
+    }
+
     fn triple(&self, ds: usize) -> [u8; 3] {
         let at = ds - RAW_START;
         [self.raw[at], self.raw[at + 1], self.raw[at + 2]]

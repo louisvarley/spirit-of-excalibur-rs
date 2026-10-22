@@ -59,3 +59,4 @@ pub mod fight;
 pub mod army;
 pub mod combat;
 pub mod script;
+pub mod intro;
