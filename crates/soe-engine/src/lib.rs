@@ -10,6 +10,8 @@ pub mod save;
 pub mod economy;
 
 pub mod interaction;
+/// Segment `1ba8` inventory leaves (transfer, count, find, drop).
+pub mod inventory;
 
 pub mod scene;
 
