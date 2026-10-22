@@ -113,6 +113,7 @@ def record(snap: str) -> dict:
     hook(skip("15b8_1876", 1), lin(0x15B8, 0x1876))
     hook(skip("1772_0578", 0), lin(0x1772, 0x0578))
     hook(skip("20b5_1229", 1), lin(0x20B5, 0x1229))
+    hook(skip("15b8_0461", 14), lin(0x15B8, 0x0461))
 
     def call(off: int, args: list[int], patch: list[list[int]] = ()) -> dict:
         m.restore(base)
@@ -125,6 +126,8 @@ def record(snap: str) -> dict:
         m.push(SENTINEL[0])
         m.push(SENTINEL[1])
         sp = ((m.r("ss") - DS) << 4) + m.r("sp")
+        # 078f's slot array [BP-0x32] is never cleared: record what it reads.
+        stale = m.read(m.r("ss"), m.r("sp") - 0x34, 0x32).hex()
         m.w("cs", 0x1BA8 - 0x1000 + LOAD_SEG)
         m.w("ip", off)
         m.w("flags", m.r("flags") | 0x200)
@@ -142,7 +145,7 @@ def record(snap: str) -> dict:
         diff = [[i, after[i]] for c in range(0, 0x10000, 0x100) if after[c:c + 0x100] != before[c:c + 0x100]
                 for i in range(c, c + 0x100) if after[i] != before[i] and not lo <= i < hi]
         return {"fn": f"{off:04x}", "args": args, "patch": [list(p) for p in patch], "ax": m.r("ax"), "rng": cur["rng"],
-                "msgs": cur["msgs"], "subcalls": cur["subcalls"], "writes": diff}
+                "msgs": cur["msgs"], "subcalls": cur["subcalls"], "stale": stale, "writes": diff}
 
     calls = []
     carried = []
@@ -166,6 +169,13 @@ def record(snap: str) -> dict:
             for to in (owners[0], o + 1):
                 for n in (1, 2, 7):
                     calls.append(call(0x0431, [d, o, to, n]))
+    for o in owners + [0]:
+        for req in (0, 0x0001, 0x0100, 0x1000, 0x2000, 0x4000):
+            for exc in (0, 0x8000, 0x0100):
+                for cb in ((0, 0), (0x1234, 0x1BA8)):
+                    for y in (20, 0xF8):
+                        # Owner 0 takes per-definition counts from a far pointer.
+                        calls.append(call(0x078F, [y, req, exc, o, 0x4DD1, DS, cb[0], cb[1]]))
     for cid in range(1, 93):
         for stat in (0x25, 0x2D, 0x2F, 0x30):
             for delta in (-60, -3, -1, 1, 4, 250):

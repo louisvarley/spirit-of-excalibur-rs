@@ -42,6 +42,29 @@ const LOSES: u16 = 0x572E;
 const STAT_LABELS: usize = 0x500C;
 const STAT_RANDOM: usize = 0x5040;
 const STAT_FLOOR: usize = 0x504D;
+/// `DS:1E8A`: list row height.
+const ROW_HEIGHT: usize = 0x1E8A;
+
+/// One `FUN_15b8_0461` call made by the inventory list (`FUN_1ba8_078f`).
+///
+/// `FUN_15b8_0461` is not ported; its argument words are kept as the list
+/// passes them. Words 6-8 are `[0, count, 0]` for a plain row and
+/// `[slot << 8 | def, 0, key]` for a selectable one, where `key` is the first
+/// name byte under the high byte of `def * 0x1B` (as the original leaves AH).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListRow {
+    /// Word 0: `0x880` plain, `0x88C` selectable.
+    pub tag: u16,
+    /// Word 2: `DS` offset of the definition (its name).
+    pub name: u16,
+    /// Words 4-5: the selection callback; `None` is `FUN_1772_0578`.
+    pub callback: Option<(u16, u16)>,
+    pub words: [u16; 3],
+    /// Word 10: column x, 3 or `3 + 0x80` (plain) / `3 + 0x73` (selectable).
+    pub x: u16,
+    /// Word 11: row y.
+    pub y: u8,
+}
 
 /// One argument of a formatted message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +91,8 @@ pub trait RoomHost {
     fn fun_1772_0578(&mut self);
     /// `FUN_20b5_1229(id)`: a character leaves (see `combat::fun_20b5_1229`).
     fn fun_20b5_1229(&mut self, id: u8);
+    /// `FUN_15b8_0461`: add a list row.
+    fn fun_15b8_0461(&mut self, row: ListRow);
 }
 
 fn character(id: u8) -> usize {
@@ -269,6 +294,97 @@ pub fn fun_1ba8_2611(ds: &mut [u8], stat: u8, id: u8, delta: i16, host: &mut dyn
     }
 }
 
+/// `FUN_1ba8_078f`: list character `owner`'s items, two per row from `y`.
+///
+/// Counts carried instances (flags exactly `0x18`) per definition; gold is
+/// the purse's low byte. With `owner == 0` the counts come from `counts`
+/// (index 1..50) instead. Definitions whose word `+0x18` has every `require`
+/// bit and no `exclude` bit get a row. Returns the y below the list plus 10,
+/// or 0 when nothing was listed.
+///
+/// The per-definition slot array is never cleared in the original, so for
+/// definitions without a carried instance it holds `stale` (the 50 stack
+/// bytes at `[BP-0x32]`). Counts and slots share one frame: a definition at
+/// 50 or above would count into the slot array, as it does here.
+#[allow(clippy::too_many_arguments)]
+pub fn fun_1ba8_078f(
+    ds: &[u8],
+    mut y: u8,
+    require: u16,
+    exclude: u16,
+    owner: u8,
+    counts: &[u8],
+    callback: Option<(u16, u16)>,
+    stale: &[u8; 0x32],
+    host: &mut dyn RoomHost,
+) -> u8 {
+    // [BP-0x64] counts, [BP-0x32] slots.
+    let mut frame = [0u8; 0x64];
+    frame[0x32..].copy_from_slice(stale);
+    if owner != 0 {
+        frame[1] = ds[character(owner) + 0x28];
+        for i in 0..INSTANCE_COUNT {
+            let r = inst(i);
+            if ds[r + 3] == 0x18 && ds[r + 1] == owner {
+                let d = usize::from(ds[r]);
+                frame[d] = frame[d].wrapping_add(1);
+                frame[0x32 + d] = i as u8;
+            }
+        }
+    } else {
+        frame[1..0x32].copy_from_slice(&counts[1..0x32]);
+    }
+    let mut right = false;
+    let mut any = false;
+    for d in 1..0x32usize {
+        if frame[d] == 0 {
+            continue;
+        }
+        let def = DEFINITIONS + d * 0x1B;
+        let flags = word(ds, def + 0x18);
+        if flags & require != require || flags & exclude != 0 {
+            continue;
+        }
+        let toggle = u16::from(right);
+        let row = match callback {
+            None => ListRow {
+                tag: 0x880,
+                name: def as u16,
+                callback: None,
+                words: [0, u16::from(frame[d]), 0],
+                x: (toggle << 7) + 3,
+                y,
+            },
+            Some(cb) => ListRow {
+                tag: 0x88C,
+                name: def as u16,
+                callback: Some(cb),
+                words: [
+                    u16::from(frame[0x32 + d]) << 8 | d as u16,
+                    0,
+                    ((d * 0x1B) as u16 & 0xFF00) | u16::from(ds[def]),
+                ],
+                x: toggle * 0x73 + 3,
+                y,
+            },
+        };
+        host.fun_15b8_0461(row);
+        if right {
+            y = y.wrapping_add(ds[ROW_HEIGHT]);
+        }
+        right = !right;
+        any = true;
+    }
+    if right {
+        y = y.wrapping_add(ds[ROW_HEIGHT]);
+    }
+    if any {
+        y.wrapping_add(10)
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,6 +438,28 @@ mod tests {
         }
         fn fun_20b5_1229(&mut self, id: u8) {
             self.subcalls.push(serde_json::json!(["20b5_1229", id]));
+        }
+        fn fun_15b8_0461(&mut self, r: ListRow) {
+            // Runtime segments as the emulator sees them (DGROUP 0x3364, 1772).
+            let rt = |seg: u16| seg - 0x1000 + 0x214;
+            let (co, cs) = r.callback.unwrap_or((0x578, rt(0x1772)));
+            self.subcalls.push(serde_json::json!([
+                "15b8_0461",
+                r.tag,
+                0,
+                r.name,
+                rt(0x3364),
+                co,
+                cs,
+                r.words[0],
+                r.words[1],
+                r.words[2],
+                0xF0,
+                r.x,
+                r.y,
+                0,
+                0
+            ]));
         }
     }
 
@@ -386,6 +524,20 @@ mod tests {
                         "{what}"
                     ),
                     "01ff" => fun_1ba8_01ff(&mut ds, a[0], a[1], &mut host),
+                    "078f" => {
+                        let counts = &before[usize::from(w[4])..usize::from(w[4]) + 0x32];
+                        let cb = if w[6] | w[7] == 0 {
+                            None
+                        } else {
+                            Some((w[6], w[7]))
+                        };
+                        let stale: [u8; 0x32] =
+                            hex(call["stale"].as_str().unwrap()).try_into().unwrap();
+                        let y = fun_1ba8_078f(
+                            &ds, a[0], w[1], w[2], a[3], counts, cb, &stale, &mut host,
+                        );
+                        assert_eq!(y, ax as u8, "{what}");
+                    }
                     "2611" => fun_1ba8_2611(&mut ds, a[0], a[1], w[2] as i16, &mut host),
                     _ => panic!("unknown {f}"),
                 }
