@@ -39,7 +39,7 @@ reading, not a verified fact.
 | `0431` | 204 | transfer `count` of a definition between owners (gold: purse words) | **ported** |
 | `04fd` | 130 | count carried instances of a definition (gold: purse) | **ported** |
 | `057f`/`05b3` | 50+476 | list builder used by Pickup and `FUN_26c5_111d`; Ghidra split it at a switch (`caseD_3f`) | |
-| `078f` | 578 | inventory list builder: groups carried instances by definition, filters by definition flag word `+0x18`, emits rows via `FUN_15b8_0461`; returns next y | |
+| `078f` | 578 | inventory list builder: groups carried instances by definition, filters by definition flag word `+0x18`, emits rows via `FUN_15b8_0461`; returns next y. Its slot array is never cleared (stale stack for gold and owner 0) | **ported** |
 | `09d1` | 49 | helper for Pickup | |
 | `0a42` | 88 | Pickup confirm | |
 | `0a9a` | 193 | **Pickup** ("What item shall %S pick up?") | |
@@ -62,7 +62,7 @@ reading, not a verified fact.
 | `22ef` | 102 | **Talk** target → `FUN_26c5_071a` | approximated in `interaction.rs` |
 | `2355` | 377 | **Search** body (gold / item / nothing) | |
 | `24ce` | 314 | Search worker | |
-| `2611` | 447 | stat change `(stat, id, delta)` with "%S %s %d %s point(s)" and the reproach death; called by battle code | recorded as a subcall in `combat.rs` |
+| `2611` | 447 | stat change `(stat, id, delta)` with "%S %s %d %s point(s)" and the reproach death (`+0x2F <= 5` after a loss → `FUN_20b5_1229`); gains need `random(DS:5040[s]) + DS:504D[s] >= old`; called by battle code | **ported**; `combat.rs` still reports it as an event |
 | `27d0` | 770 | apply an effect to a stat ("%S feels no change") | |
 | `2ad2` | 213 | find a carried instance by definition / bit 0 / class | **ported** |
 | `2ba7` | 104 | spell target choice ("Select a target", "No one here is dead", not in battle) | |
@@ -94,13 +94,24 @@ reading, not a verified fact.
 ## Verification
 
 `tests/oracle/inventory_vectors.py` calls the ported functions directly from
-five snapshots (hall, york0, roundtable, map, duel), skipping message boxes and
-recording random draws, and `inventory::tests` replays 4290 calls with every
-DGROUP write. Gaps: the snapshots share one party (9 carried instances), and
+snapshots (hall, york0, roundtable by default). It skips message boxes
+(recording the format string with decoded arguments), `FUN_15b8_0461`,
+`FUN_15b8_1876`, `FUN_1772_0578` and `FUN_20b5_1229` (recorded with their
+arguments), and records the random draws. `inventory::tests` replays 10986
+calls and compares every DGROUP write, except the bytes the host owns: the
+random seed `DS:01FC` and the display-name ring `DS:9D32`/`DS:7ACD` that
+`names::display_name` replaces. Gaps: the snapshots share one party (9 carried instances), and
 01ff's "no free slot" fall-through and full ground piles are not exercised.
 
 ## Next
 
-Leaves left: 078f (needs the `FUN_15b8_0461` row emitter as a host call),
-2611 (needs `FUN_1000_0396`, `FUN_332e_000c`, the formatter), 27d0, 0e76, 001c.
+Stat ids used by 2611: `0x25` magic, `0x2D` combat, `0x2F` nobility,
+`0x30` faith (labels from `DS:500C`). `FUN_1000_0396` is the Turbo C huge
+pointer add and `FUN_332e_000c` is `abs`.
+
+Leaves left: 27d0 (effect on a stat, like 2611), 0e76 (eldritch blade, uses
+graphics `14b0`/`17f3`), 001c (buffer allocation), 2d9a/2e00/421a (effect
+messages), 2ad2's callers. Swapping in: `combat.rs` could call
+`fun_1ba8_2611`/`fun_1ba8_01ff` instead of emitting events, once the battle
+session's changes are merged.
 Then the menu handlers, which need the menu/list UI as host calls.
