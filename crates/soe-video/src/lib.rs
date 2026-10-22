@@ -254,6 +254,9 @@ pub struct AtlasFont {
     pub spacing: u8,
     /// 95 metric words for codes `0x20..=0x7E` (`DS:1E8C`).
     pub metrics: Vec<u16>,
+    /// Atlas shading index dropped by `TextColor::Solid`, so the shading
+    /// does not thicken glyphs on a flat ground (6 in `TITLE.RES#200`).
+    pub highlight: Option<u8>,
 }
 
 /// One glyph's metric word, decoded.
@@ -532,12 +535,17 @@ impl Video for SoftwareVideo {
                         continue;
                     }
                     let pixel = atlas.indices[(row * atlas_width + sx) as usize];
-                    if pixel != 0 {
-                        let pixel = match color {
-                            TextColor::Atlas => pixel,
-                            TextColor::Solid(index) => index,
-                        };
-                        plotted.push((start_x + col, top + row, pixel));
+                    let out = match color {
+                        TextColor::Atlas if pixel != 0 => Some(pixel),
+                        TextColor::Solid(index)
+                            if pixel != 0 && Some(pixel) != font.highlight =>
+                        {
+                            Some(index)
+                        }
+                        _ => None,
+                    };
+                    if let Some(out) = out {
+                        plotted.push((start_x + col, top + row, out));
                     }
                 }
             }
@@ -579,6 +587,39 @@ impl Video for SoftwareVideo {
 
     fn read_pixel(&self, x: u16, y: u16) -> Option<u8> {
         self.frame.pixel(x, y)
+    }
+}
+
+/// Present a logical frame into a window surface of `out_width` x
+/// `out_height` `0x00RRGGBB` pixels with nearest-neighbour scaling. The
+/// palette and the fade (`0.0..=1.0`) are applied here, at presentation
+/// time; the output size never reaches game code.
+pub fn present_nearest_xrgb(
+    frame: &IndexedFrame,
+    palette: &[soe_assets::Rgb],
+    fade: f32,
+    out_width: usize,
+    out_height: usize,
+    out: &mut [u32],
+) {
+    let sw = usize::from(frame.width);
+    let sh = usize::from(frame.height);
+    if sw == 0 || sh == 0 {
+        return;
+    }
+    for y in 0..out_height {
+        let sy = y * sh / out_height;
+        for x in 0..out_width {
+            let sx = x * sw / out_width;
+            let index = usize::from(frame.pixels[sy * sw + sx]);
+            let [r, g, b] = palette.get(index).copied().unwrap_or([0, 0, 0]);
+            let r = (f32::from(r) * fade) as u8;
+            let g = (f32::from(g) * fade) as u8;
+            let b = (f32::from(b) * fade) as u8;
+            if let Some(pixel) = out.get_mut(y * out_width + x) {
+                *pixel = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            }
+        }
     }
 }
 
@@ -767,6 +808,7 @@ mod tests {
             line_height: 10,
             spacing: 1,
             metrics,
+            highlight: Some(6),
         };
         assert_eq!(font.text_width("AB"), 3 + 1);
         video.set_font(font);
@@ -779,6 +821,9 @@ mod tests {
         assert_eq!(f.pixel(0, 10), Some(2));
         video.draw_text(0, 20, "A", TextColor::Solid(9)).unwrap();
         assert_eq!(video.frame().pixel(1, 20), Some(9));
+        // Solid text drops the highlight shade (atlas index 6).
+        video.draw_text(0, 30, "B", TextColor::Solid(9)).unwrap();
+        assert_eq!(video.frame().pixel(0, 30), Some(0));
     }
 
     #[test]
