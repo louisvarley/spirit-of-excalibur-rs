@@ -32,9 +32,24 @@ def lin(seg: int, off: int) -> int:
     return ((seg - 0x1000 + LOAD_SEG) << 4) + off
 
 
-def start_army_battle(m: DosMachine, side1: list[int], side2: list[int], mode: int = 0x10) -> dict:
+CASTLES = (0x258, 0x259, 0x25C, 0x25F)
+
+
+def castle_position(m: DosMachine) -> tuple[int, int]:
+    """(x, y) of the first location whose record word +0x16 is a castle
+    (the kinds FUN_2449_134e tests)."""
+    for i in range(1, 0x3D):
+        at = 0x40B6 + i * 0x19
+        if m.u16(DS, at + 0x16) in CASTLES:
+            return m.u16(DS, at + 0x12), m.u16(DS, at + 0x14)
+    raise SystemExit("no castle location")
+
+
+def start_army_battle(m: DosMachine, side1: list[int], side2: list[int], mode: int = 0x10,
+                      castle: int = 0) -> dict:
     """Set up the battle lists and enter FUN_20b5_2a30(mode). Returns a
-    dict whose "done" turns True when 2a30 returns."""
+    dict whose "done" turns True when 2a30 returns. `castle` 1 or 2 stands
+    that side's leader on a castle location (3: both)."""
     m.write(DS, 0x9DC3, bytes(0x32))
     m.write(DS, 0x9DC3, bytes(side1))
     m.write(DS, 0x9DD7, bytes(side2))
@@ -49,6 +64,12 @@ def start_army_battle(m: DosMachine, side1: list[int], side2: list[int], mode: i
     for c in side2:
         m.put16(DS, 0x2C6C + c * 0x38, x + 8)
         m.put16(DS, 0x2C6E + c * 0x38, y)
+    if castle:
+        cx, cy = castle_position(m)
+        for side, leader in ((1, side1[0]), (2, side2[0])):
+            if castle & side:
+                m.put16(DS, 0x2C6C + leader * 0x38, cx)
+                m.put16(DS, 0x2C6E + leader * 0x38, cy)
     st = {"done": False, "hook": None}
     # Enter 2a30 from the map loop (FUN_1b06_0007), not from wherever the
     # snapshot stopped (often inside the timer interrupt), and resume that

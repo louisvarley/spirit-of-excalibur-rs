@@ -71,6 +71,7 @@ class Recorder:
         self.counts: dict[str, int] = {}
         self.fall_back = 1
         self.pokes = None
+        self.choices = [2, 3, 1, 1]
 
     # -- state -------------------------------------------------------
     def widgets(self) -> list[str]:
@@ -238,11 +239,12 @@ class Recorder:
             if self.pokes.random() < 0.08:
                 s = m.read(DS, 0x9C82 + i, 1)[0]
                 if s in (1,):
-                    m.write(DS, 0x9C82 + i, bytes([self.pokes.choice([2, 3, 1, 1])]))
+                    m.write(DS, 0x9C82 + i, bytes([self.pokes.choice(self.choices)]))
 
 
 def run(snap: str, side1: list[int], side2: list[int], mode: int, delay: int, ticks: int,
-        pokes: int | None, label: str, fall_back: int = 1) -> tuple[list[dict], str]:
+        pokes: int | None, label: str, fall_back: int = 1, castle: int = 0,
+        choices: list[int] | None = None) -> tuple[list[dict], str]:
     m = DosMachine()
     m.load("EXCAL.EXE")
     m.restore(pickle.loads((OUT / f"{snap}.snap").read_bytes()))
@@ -250,8 +252,10 @@ def run(snap: str, side1: list[int], side2: list[int], mode: int, delay: int, ti
     rec = Recorder(m, label)
     rec.fall_back = fall_back
     rec.pokes = random.Random(pokes) if pokes is not None else None
+    if choices:
+        rec.choices = choices
     base = None
-    st = start_army_battle(m, side1, side2, mode)
+    st = start_army_battle(m, side1, side2, mode, castle)
     rec.install()
     for t in range(ticks):
         m.run(1)
@@ -274,6 +278,17 @@ def main(argv: list[str]) -> int:
         ([1, 6, 50, 59, 60, 61], [56, 57, 58], 0x10, 7, 6000, 1, "c", 1),
         ([1, 6, 50], [56, 57, 58, 59, 60, 61], 0x10, 11, 6000, 2, "d", 0),
         ([59, 60, 61], [56, 57, 58], 0x30, 5, 3000, None, "e", 1),
+        # Retreats (slot 6) given often.
+        ([1, 6, 50, 59, 60, 61], [56, 57, 58], 0x10, 13, 6000, 3, "f", 1, 0, [6, 6, 2, 3]),
+        # Side one's leader at a castle: the fall-back question, both answers.
+        ([6, 50], [56, 57, 58, 59, 60, 61], 0x10, 17, 6000, None, "g", 1, 1),
+        ([6, 50], [56, 57, 58, 59, 60, 61], 0x10, 19, 6000, None, "h", 0, 1),
+        # Side two at a castle; and both.
+        ([1, 6, 50, 59, 60, 61], [56, 57, 58], 0x10, 23, 6000, None, "i", 1, 2),
+        ([1, 6, 50], [56, 57, 58], 0x30, 29, 3000, None, "j", 1, 3),
+        # Defending (2a30 adds 8: neither leader is Round Table), on screen.
+        ([59, 60, 61], [56, 57, 58], 0x10, 31, 6000, 4, "k", 1),
+        ([59, 60, 61], [56, 57, 58], 0x10, 37, 6000, None, "l", 1, 1),
     ]
     calls = []
     base = None
