@@ -58,3 +58,4 @@ pub mod arrival;
 pub mod fight;
 pub mod combat;
 pub mod script;
+pub mod intro;

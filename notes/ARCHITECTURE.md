@@ -54,6 +54,18 @@ logic and makes headless tests possible. A reference indexed renderer gives a
 pixel-exact oracle. The scaled presenter is the only place that knows about
 output size, aspect ratio and filtering.
 
+**Current state (2026-10-22):** `soe-app` draws every screen through
+`soe-app/src/gfx.rs` (`Gfx` over `SoftwareVideo`). UI art is registered by
+handle (`TITLE.RES#200` font atlas, `TITLE.RES#300` window sheet), and text
+goes through `Video::draw_text` with an `AtlasFont` that holds metrics only
+(`TextColor::Atlas` = original colours, `Solid` for port-only screens).
+Window scaling is `soe_video::present_nearest_xrgb`. Still outside `Video`:
+the engine composers that build whole frames (`room::compose_scene`,
+`WorldMap::render`/`draw_entity`, the duel frame) and `Session::draw_text`.
+Their output enters `Gfx` once through `SoftwareVideo::blit_indexed`, the
+readback path. Moving them behind handles is the next step and belongs to
+whoever owns those modules.
+
 ## 5. Screen readback risk
 
 **Rule:** if the original reads pixels back from the screen (save-under menus,
