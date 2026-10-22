@@ -32,6 +32,9 @@ pub const TRANSITION: Duration = Duration::from_millis(250);
 /// Every screen the loop can present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Screen {
+    /// The start-up intro (`FUN_2c74_0006`, [`crate::intro`]); any key or
+    /// click skips it, then the menu follows.
+    Intro,
     /// Main menu / idle path (original loop state `-2`).
     Menu,
     /// Playable room scene.
@@ -80,6 +83,7 @@ impl Screen {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Intro => "INTRO",
             Self::Menu => "MENU",
             Self::Room => "ROOM",
             Self::Map => "MAP",
@@ -181,6 +185,8 @@ pub enum RuntimeEvent {
     BattleEnded(BattleOutcome),
     GameLost,
     MenuEntered,
+    /// Start the named `MUSIC.RES` piece (`FUN_1316_187b`).
+    Music(String),
     Error(String),
 }
 
@@ -242,6 +248,9 @@ pub struct Runtime {
     duel_return_scene: Option<u16>,
     /// Champions of a single combat (`DS:9C4E` / `DS:9C4F`).
     pending_pair: Option<(u8, u8)>,
+    /// The running start-up intro and its tick accumulator.
+    intro: Option<crate::intro::Intro>,
+    intro_accum: Duration,
 }
 
 impl Runtime {
@@ -324,6 +333,8 @@ impl Runtime {
             duel_accum: Duration::ZERO,
             duel_return_scene: None,
             pending_pair: None,
+            intro: None,
+            intro_accum: Duration::ZERO,
         };
         runtime.save_files = list_saves(&runtime.game_dir);
         runtime.sync_scene_index();
@@ -1421,6 +1432,45 @@ impl Runtime {
     }
 
     /// Original loop state `-2`: menu/idle path.
+    /// Play the start-up intro; the menu follows when it ends or is skipped.
+    pub fn start_intro(&mut self, mut intro: crate::intro::Intro) -> Vec<RuntimeEvent> {
+        self.state = LoopState::Menu;
+        self.screen = Screen::Intro;
+        self.intro_accum = Duration::ZERO;
+        let events = intro.start();
+        self.intro = Some(intro);
+        self.intro_events(events)
+    }
+
+    /// The running intro, if any.
+    #[must_use]
+    pub fn intro(&self) -> Option<&crate::intro::Intro> {
+        self.intro.as_ref()
+    }
+
+    /// Any key or click during the intro (`DS:9DBB`).
+    pub fn skip_intro(&mut self) {
+        if let Some(intro) = self.intro.as_mut() {
+            intro.skip();
+        }
+    }
+
+    fn intro_events(&mut self, events: Vec<crate::intro::IntroEvent>) -> Vec<RuntimeEvent> {
+        let mut out = Vec::new();
+        for event in events {
+            match event {
+                crate::intro::IntroEvent::Music(name) => out.push(RuntimeEvent::Music(name.to_string())),
+                crate::intro::IntroEvent::Sound { .. } => {}
+                crate::intro::IntroEvent::Finished => {
+                    self.intro = None;
+                    self.show_menu();
+                    out.push(RuntimeEvent::MenuEntered);
+                }
+            }
+        }
+        out
+    }
+
     pub fn show_menu(&mut self) {
         self.state = LoopState::Menu;
         self.screen = Screen::Menu;
@@ -1473,6 +1523,18 @@ impl Runtime {
     /// Advance timers, resolve negative loop states, and animate the room.
     pub fn tick(&mut self, delta: Duration) -> Vec<RuntimeEvent> {
         let mut events = Vec::new();
+        if self.screen == Screen::Intro {
+            self.intro_accum += delta;
+            while self.intro_accum >= TICK {
+                self.intro_accum -= TICK;
+                let Some(intro) = self.intro.as_mut() else {
+                    break;
+                };
+                let tick_events = intro.tick();
+                events.extend(self.intro_events(tick_events));
+            }
+            return events;
+        }
         if let Some(remaining) = self.transition_remaining {
             let remaining = remaining.saturating_sub(delta);
             self.transition_remaining = (!remaining.is_zero()).then_some(remaining);
@@ -1527,6 +1589,10 @@ impl Runtime {
 
     /// Route one logical key to the active screen.
     pub fn handle_key(&mut self, key: Key) -> Vec<RuntimeEvent> {
+        if self.screen == Screen::Intro {
+            self.skip_intro();
+            return Vec::new();
+        }
         if key == Key::Mute {
             return vec![RuntimeEvent::MuteToggled];
         }
@@ -1540,6 +1606,7 @@ impl Runtime {
                 _ => Vec::new(),
             },
             Screen::Quit => self.request_quit(),
+            Screen::Intro => Vec::new(),
             Screen::GameLost => match key {
                 Key::Confirm | Key::Cancel | Key::Space => {
                     self.state = LoopState::ExitToMenu;
@@ -1867,6 +1934,10 @@ impl Runtime {
 
     /// Route a click in logical 320x200 coordinates.
     pub fn handle_click(&mut self, x: i16, y: i16) -> Vec<RuntimeEvent> {
+        if self.screen == Screen::Intro {
+            self.skip_intro();
+            return Vec::new();
+        }
         let left = i32::from(x) < i32::from(LOGICAL_WIDTH) / 2;
         match self.screen {
             Screen::Story => {

@@ -33,29 +33,52 @@ pub enum VideoMode {
     Text,
 }
 
-/// Blit flags observed in the driver boundary.
+/// Blit flags observed in the driver boundary (`FUN_14b0_0bbf` modes: `0x40`
+/// transparent colour 0, `0x01` mirrored). The driver also has an XOR mode
+/// (`drv_6`); it is not modelled until a caller needs it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BlitFlags {
-    /// Copy every pixel.
-    Opaque,
-    /// Treat the given palette index as transparent (colour 0 in the original).
-    Transparent(u8),
-    /// XOR the source into the destination (driver `drv_6` has an XOR mode).
-    Xor,
+pub struct BlitFlags {
+    /// Palette index that is skipped, if any (colour 0 in the original).
+    pub transparent: Option<u8>,
+    /// Mirror the source horizontally.
+    pub mirror_x: bool,
 }
 
-/// A logical-coordinate rectangle.
+impl BlitFlags {
+    /// Copy every pixel.
+    pub const OPAQUE: Self = Self {
+        transparent: None,
+        mirror_x: false,
+    };
+    /// Skip colour 0 (driver mode `0x46`).
+    pub const TRANSPARENT: Self = Self {
+        transparent: Some(0),
+        mirror_x: false,
+    };
+
+    /// The same flags, mirrored horizontally when `mirror_x` (mode `0x47`).
+    #[must_use]
+    pub const fn mirrored(self, mirror_x: bool) -> Self {
+        Self {
+            transparent: self.transparent,
+            mirror_x,
+        }
+    }
+}
+
+/// A logical-coordinate rectangle. The origin may be off-screen; drawing
+/// operations clip to the logical frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rect {
-    pub x: u16,
-    pub y: u16,
+    pub x: i16,
+    pub y: i16,
     pub width: u16,
     pub height: u16,
 }
 
 impl Rect {
     #[must_use]
-    pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
+    pub const fn new(x: i16, y: i16, width: u16, height: u16) -> Self {
         Self {
             x,
             y,
@@ -74,6 +97,8 @@ pub enum VideoError {
     InvalidScale,
     #[error("unsupported operation in the reference renderer: {0}")]
     Unsupported(&'static str),
+    #[error("image not registered with the video layer: {0}")]
+    MissingImage(String),
 }
 
 /// An 8-bit indexed logical frame.
@@ -206,6 +231,77 @@ impl LogicalFrame {
     }
 }
 
+/// How text glyphs are coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextColor {
+    /// The atlas's own shaded colours, as the original draws all game text
+    /// (`14b0:0af9`, blit mode `0x46`, no remap).
+    Atlas,
+    /// Every glyph pixel in one palette index (screens without original art).
+    Solid(u8),
+}
+
+/// Metrics of the game's atlas font (`DS:1E8A..`, see `notes/FONT.md`). The
+/// atlas pixels stay with the `Video` implementation; this holds no pixels,
+/// so glyphs or whole strings can be replaced by an override pack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtlasFont {
+    /// Atlas image (`TITLE.RES#200`).
+    pub atlas: ImageHandle,
+    /// Line advance (`DS:1E8A`).
+    pub line_height: u16,
+    /// Inter-character spacing (`DS:1E8B`).
+    pub spacing: u8,
+    /// 95 metric words for codes `0x20..=0x7E` (`DS:1E8C`).
+    pub metrics: Vec<u16>,
+    /// Atlas shading index dropped by `TextColor::Solid`, so the shading
+    /// does not thicken glyphs on a flat ground (6 in `TITLE.RES#200`).
+    pub highlight: Option<u8>,
+}
+
+/// One glyph's metric word, decoded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glyph {
+    pub src_x: u16,
+    pub width: u8,
+    pub left_overhang: bool,
+    pub right_overhang: bool,
+}
+
+impl AtlasFont {
+    /// Decoded metric for a printable code.
+    #[must_use]
+    pub fn glyph(&self, code: u8) -> Option<Glyph> {
+        if !(0x20..=0x7e).contains(&code) {
+            return None;
+        }
+        let metric = *self.metrics.get(usize::from(code - 0x20))?;
+        Some(Glyph {
+            src_x: metric & 0x3ff,
+            width: (metric >> 12) as u8,
+            left_overhang: metric >> 11 & 1 != 0,
+            right_overhang: metric >> 10 & 1 != 0,
+        })
+    }
+
+    /// Pen advance (`FUN_14b0_094f`).
+    #[must_use]
+    pub fn advance(&self, glyph: Glyph) -> i32 {
+        i32::from(glyph.width) + i32::from(self.spacing)
+            - i32::from(glyph.left_overhang)
+            - i32::from(glyph.right_overhang)
+    }
+
+    /// Advance width of one line of text in logical pixels.
+    #[must_use]
+    pub fn text_width(&self, text: &str) -> u32 {
+        text.bytes()
+            .filter_map(|code| self.glyph(code))
+            .map(|glyph| self.advance(glyph).max(0) as u32)
+            .sum()
+    }
+}
+
 /// The platform boundary. **Every method is provisional** until MCGA.DVR is
 /// fully reversed. Operations take resource handles and logical rectangles,
 /// never raw pixel slices, so HD assets and scaled presentation stay outside
@@ -213,20 +309,26 @@ impl LogicalFrame {
 pub trait Video {
     /// Enter a logical video mode.
     fn set_mode(&mut self, mode: VideoMode) -> Result<(), VideoError>;
-    /// Blit an image handle from a source rect to a logical destination rect.
+    /// Blit a source rect of an image handle unscaled to logical `(x, y)`,
+    /// clipped to the frame (the driver never scales).
     fn blit_image(
         &mut self,
         image: &ImageHandle,
         src: Rect,
-        dst: Rect,
+        x: i16,
+        y: i16,
         flags: BlitFlags,
     ) -> Result<(), VideoError>;
-    /// Fill a logical rectangle with a palette index.
+    /// Fill a logical rectangle with a palette index, clipped to the frame.
     fn fill_rect(&mut self, rect: Rect, color: u8) -> Result<(), VideoError>;
     /// Copy a logical region (save-under/readback path; existence is unverified).
     fn copy_rect(&mut self, src: Rect, dst_x: u16, dst_y: u16) -> Result<(), VideoError>;
-    /// Draw text at logical coordinates. Font metrics are not reversed yet.
-    fn draw_text(&mut self, x: u16, y: u16, text: &str, color: u8) -> Result<(), VideoError>;
+    /// Install the atlas font used by `draw_text`.
+    fn set_font(&mut self, font: AtlasFont);
+    /// Draw text with the installed font, pen origin at the glyph top-left;
+    /// a newline starts a new line at `x`.
+    fn draw_text(&mut self, x: i16, y: i16, text: &str, color: TextColor)
+    -> Result<(), VideoError>;
     /// Install a palette by handle.
     fn set_palette(&mut self, palette: PaletteHandle);
     /// Apply a presentation-time fade (0 = black, 255 = normal).
@@ -240,11 +342,14 @@ pub trait Video {
     fn read_pixel(&self, x: u16, y: u16) -> Option<u8>;
 }
 
-/// Pixel-exact 320x200 indexed software reference implementation.
+/// Pixel-exact 320x200 indexed software reference implementation. Image
+/// pixels are registered by the asset layer and only ever indexed here.
 #[derive(Debug, Clone)]
 pub struct SoftwareVideo {
     frame: IndexedFrame,
     base_palette: Palette,
+    images: std::collections::HashMap<ImageHandle, PlanarImage>,
+    font: Option<AtlasFont>,
 }
 
 impl SoftwareVideo {
@@ -253,6 +358,32 @@ impl SoftwareVideo {
         Self {
             frame: IndexedFrame::black(),
             base_palette: Palette::black(),
+            images: std::collections::HashMap::new(),
+            font: None,
+        }
+    }
+
+    /// Make a decoded image available to `blit_image` under `handle`.
+    pub fn register_image(&mut self, handle: ImageHandle, image: PlanarImage) {
+        self.images.insert(handle, image);
+    }
+
+    /// Whether `handle` has been registered.
+    #[must_use]
+    pub fn has_image(&self, handle: &ImageHandle) -> bool {
+        self.images.contains_key(handle)
+    }
+
+    /// Clear the frame to colour 0, keeping images, font and palette.
+    pub fn clear(&mut self) {
+        self.frame.pixels.fill(0);
+    }
+
+    fn plot(&mut self, x: i32, y: i32, color: u8) {
+        if (0..i32::from(self.frame.width)).contains(&x)
+            && (0..i32::from(self.frame.height)).contains(&y)
+        {
+            self.frame.set_pixel(x as u16, y as u16, color);
         }
     }
 
@@ -294,20 +425,48 @@ impl Video for SoftwareVideo {
 
     fn blit_image(
         &mut self,
-        _image: &ImageHandle,
-        _src: Rect,
-        _dst: Rect,
-        _flags: BlitFlags,
+        image: &ImageHandle,
+        src: Rect,
+        x: i16,
+        y: i16,
+        flags: BlitFlags,
     ) -> Result<(), VideoError> {
-        Err(VideoError::Unsupported(
-            "handle-based blit requires an AssetSource; use blit_indexed in tests",
-        ))
+        let Some(source) = self.images.get(image) else {
+            return Err(VideoError::MissingImage(image.0.key()));
+        };
+        let source_width = i32::from(source.width);
+        let source_height = i32::from(source.height);
+        let mut plotted = Vec::new();
+        for row in 0..i32::from(src.height) {
+            let sy = i32::from(src.y) + row;
+            if !(0..source_height).contains(&sy) {
+                continue;
+            }
+            for col in 0..i32::from(src.width) {
+                let sx = if flags.mirror_x {
+                    i32::from(src.x) + i32::from(src.width) - 1 - col
+                } else {
+                    i32::from(src.x) + col
+                };
+                if !(0..source_width).contains(&sx) {
+                    continue;
+                }
+                let pixel = source.indices[(sy * source_width + sx) as usize];
+                if flags.transparent != Some(pixel) {
+                    plotted.push((i32::from(x) + col, i32::from(y) + row, pixel));
+                }
+            }
+        }
+        for (px, py, pixel) in plotted {
+            self.plot(px, py, pixel);
+        }
+        Ok(())
     }
 
     fn fill_rect(&mut self, rect: Rect, color: u8) -> Result<(), VideoError> {
-        for y in rect.y..rect.y.saturating_add(rect.height) {
-            for x in rect.x..rect.x.saturating_add(rect.width) {
-                self.frame.set_pixel(x, y, color);
+        for row in 0..i32::from(rect.height) {
+            for col in 0..i32::from(rect.width) {
+                self.plot(i32::from(rect.x) + col, i32::from(rect.y) + row, color);
             }
         }
         Ok(())
@@ -315,9 +474,15 @@ impl Video for SoftwareVideo {
 
     fn copy_rect(&mut self, src: Rect, dst_x: u16, dst_y: u16) -> Result<(), VideoError> {
         let mut temp = Vec::with_capacity(usize::from(src.width) * usize::from(src.height));
-        for y in src.y..src.y.saturating_add(src.height) {
-            for x in src.x..src.x.saturating_add(src.width) {
-                temp.push(self.frame.pixel(x, y).unwrap_or(0));
+        for row in 0..i32::from(src.height) {
+            for col in 0..i32::from(src.width) {
+                let (x, y) = (i32::from(src.x) + col, i32::from(src.y) + row);
+                let pixel = if x >= 0 && y >= 0 {
+                    self.frame.pixel(x as u16, y as u16).unwrap_or(0)
+                } else {
+                    0
+                };
+                temp.push(pixel);
             }
         }
         let mut i = 0;
@@ -330,8 +495,65 @@ impl Video for SoftwareVideo {
         Ok(())
     }
 
-    fn draw_text(&mut self, _x: u16, _y: u16, _text: &str, _color: u8) -> Result<(), VideoError> {
-        // Provisional: the original font/metrics are not reversed yet.
+    fn set_font(&mut self, font: AtlasFont) {
+        self.font = Some(font);
+    }
+
+    fn draw_text(
+        &mut self,
+        x: i16,
+        y: i16,
+        text: &str,
+        color: TextColor,
+    ) -> Result<(), VideoError> {
+        let Some(font) = self.font.as_ref() else {
+            return Err(VideoError::Unsupported("draw_text before set_font"));
+        };
+        let Some(atlas) = self.images.get(&font.atlas) else {
+            return Err(VideoError::MissingImage(font.atlas.0.key()));
+        };
+        let atlas_width = i32::from(atlas.width);
+        let atlas_height = i32::from(atlas.height);
+        let mut plotted = Vec::new();
+        let mut pen = i32::from(x);
+        let mut top = i32::from(y);
+        for code in text.bytes() {
+            if code == b'\n' {
+                pen = i32::from(x);
+                top += i32::from(font.line_height);
+                continue;
+            }
+            let Some(glyph) = font.glyph(code) else {
+                pen += 1;
+                continue;
+            };
+            let start_x = pen - i32::from(glyph.left_overhang);
+            for row in 0..atlas_height {
+                for col in 0..i32::from(glyph.width) {
+                    let sx = i32::from(glyph.src_x) + col;
+                    if sx >= atlas_width {
+                        continue;
+                    }
+                    let pixel = atlas.indices[(row * atlas_width + sx) as usize];
+                    let out = match color {
+                        TextColor::Atlas if pixel != 0 => Some(pixel),
+                        TextColor::Solid(index)
+                            if pixel != 0 && Some(pixel) != font.highlight =>
+                        {
+                            Some(index)
+                        }
+                        _ => None,
+                    };
+                    if let Some(out) = out {
+                        plotted.push((start_x + col, top + row, out));
+                    }
+                }
+            }
+            pen += font.advance(glyph);
+        }
+        for (px, py, pixel) in plotted {
+            self.plot(px, py, pixel);
+        }
         Ok(())
     }
 
@@ -365,6 +587,39 @@ impl Video for SoftwareVideo {
 
     fn read_pixel(&self, x: u16, y: u16) -> Option<u8> {
         self.frame.pixel(x, y)
+    }
+}
+
+/// Present a logical frame into a window surface of `out_width` x
+/// `out_height` `0x00RRGGBB` pixels with nearest-neighbour scaling. The
+/// palette and the fade (`0.0..=1.0`) are applied here, at presentation
+/// time; the output size never reaches game code.
+pub fn present_nearest_xrgb(
+    frame: &IndexedFrame,
+    palette: &[soe_assets::Rgb],
+    fade: f32,
+    out_width: usize,
+    out_height: usize,
+    out: &mut [u32],
+) {
+    let sw = usize::from(frame.width);
+    let sh = usize::from(frame.height);
+    if sw == 0 || sh == 0 {
+        return;
+    }
+    for y in 0..out_height {
+        let sy = y * sh / out_height;
+        for x in 0..out_width {
+            let sx = x * sw / out_width;
+            let index = usize::from(frame.pixels[sy * sw + sx]);
+            let [r, g, b] = palette.get(index).copied().unwrap_or([0, 0, 0]);
+            let r = (f32::from(r) * fade) as u8;
+            let g = (f32::from(g) * fade) as u8;
+            let b = (f32::from(b) * fade) as u8;
+            if let Some(pixel) = out.get_mut(y * out_width + x) {
+                *pixel = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            }
+        }
     }
 }
 
@@ -491,6 +746,84 @@ mod tests {
         assert_eq!(f.pixel(1, 1), Some(7));
         assert_eq!(f.pixel(2, 2), Some(7));
         assert_eq!(f.pixel(3, 3), Some(0));
+    }
+
+    fn handle(record: u32) -> ImageHandle {
+        ImageHandle(ResourceId::new("TEST.RES", record, None::<String>))
+    }
+
+    #[test]
+    fn blit_clips_skips_transparent_and_mirrors() {
+        let mut video = SoftwareVideo::new();
+        video.register_image(
+            handle(1),
+            PlanarImage {
+                width: 3,
+                height: 1,
+                planes: 5,
+                indices: vec![1, 0, 3],
+            },
+        );
+        let src = Rect::new(0, 0, 3, 1);
+        video
+            .blit_image(&handle(1), src, -1, 0, BlitFlags::TRANSPARENT)
+            .unwrap();
+        assert_eq!(video.frame().pixel(0, 0), Some(0));
+        assert_eq!(video.frame().pixel(1, 0), Some(3));
+        video
+            .blit_image(
+                &handle(1),
+                src,
+                10,
+                5,
+                BlitFlags::TRANSPARENT.mirrored(true),
+            )
+            .unwrap();
+        assert_eq!(video.frame().pixel(10, 5), Some(3));
+        assert_eq!(video.frame().pixel(12, 5), Some(1));
+        assert!(matches!(
+            video.blit_image(&handle(2), src, 0, 0, BlitFlags::OPAQUE),
+            Err(VideoError::MissingImage(_))
+        ));
+    }
+
+    #[test]
+    fn text_uses_atlas_colours_and_metrics() {
+        let mut video = SoftwareVideo::new();
+        // 'A' = 2 px at atlas x 0; 'B' = 1 px at x 2 with a left overhang.
+        video.register_image(
+            handle(200),
+            PlanarImage {
+                width: 3,
+                height: 1,
+                planes: 5,
+                indices: vec![2, 4, 6],
+            },
+        );
+        let mut metrics = vec![0u16; 95];
+        metrics[usize::from(b'A' - 0x20)] = 2 << 12;
+        metrics[usize::from(b'B' - 0x20)] = (1 << 12) | (1 << 11) | 2;
+        let font = AtlasFont {
+            atlas: handle(200),
+            line_height: 10,
+            spacing: 1,
+            metrics,
+            highlight: Some(6),
+        };
+        assert_eq!(font.text_width("AB"), 3 + 1);
+        video.set_font(font);
+        video.draw_text(0, 0, "AB\nA", TextColor::Atlas).unwrap();
+        let f = video.frame();
+        assert_eq!(
+            (f.pixel(0, 0), f.pixel(1, 0), f.pixel(2, 0)),
+            (Some(2), Some(4), Some(6))
+        );
+        assert_eq!(f.pixel(0, 10), Some(2));
+        video.draw_text(0, 20, "A", TextColor::Solid(9)).unwrap();
+        assert_eq!(video.frame().pixel(1, 20), Some(9));
+        // Solid text drops the highlight shade (atlas index 6).
+        video.draw_text(0, 30, "B", TextColor::Solid(9)).unwrap();
+        assert_eq!(video.frame().pixel(0, 30), Some(0));
     }
 
     #[test]
