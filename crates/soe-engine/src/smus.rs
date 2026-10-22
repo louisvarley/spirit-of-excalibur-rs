@@ -315,10 +315,186 @@ impl MusicLibrary {
     }
 }
 
+/// One AdLib operator's parameters in the driver's slot order
+/// (`ADLIB.DVR` `FUN_0000_077b`, 14-byte slots at `DS:132B`): KSL, MULT,
+/// FB, AR, SL, EG, DR, RR, TL, AM, VIB, KSR, FM. Wave select is passed as
+/// 0 by the instrument loader (`drv_10`, `0000:03ea`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Operator {
+    pub ksl: u8,
+    pub multiple: u8,
+    pub feedback: u8,
+    pub attack: u8,
+    pub sustain_level: u8,
+    pub sustaining: bool,
+    pub decay: u8,
+    pub release: u8,
+    pub total_level: u8,
+    pub tremolo: bool,
+    pub vibrato: bool,
+    pub ksr: bool,
+    /// `FM` param: 1 = frequency modulation. The driver writes
+    /// `FB << 1 | (FM == 0)` to register `0xC0` (`FUN_0000_090e`).
+    pub fm: bool,
+}
+
+impl Operator {
+    fn from_words(words: &[u16]) -> Self {
+        // Fields are stored as words; the driver keeps the low byte.
+        let b = |index: usize| words[index] as u8;
+        Self {
+            ksl: b(0) & 3,
+            multiple: b(1) & 15,
+            feedback: b(2) & 7,
+            attack: b(3) & 15,
+            sustain_level: b(4) & 15,
+            sustaining: b(5) != 0,
+            decay: b(6) & 15,
+            release: b(7) & 15,
+            total_level: b(8) & 63,
+            tremolo: b(9) != 0,
+            vibrato: b(10) != 0,
+            ksr: b(11) != 0,
+            fm: b(12) != 0,
+        }
+    }
+}
+
+/// One instrument from `SEX.IDF`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timbre {
+    pub name: String,
+    /// Header byte 0: percussive voice (only `TomDrum`).
+    pub percussive: bool,
+    /// Header byte 1: AdLib percussion voice number.
+    pub voice: u8,
+    pub modulator: Operator,
+    /// The carrier's `feedback` slot holds junk in the file (`0xE206`);
+    /// only the modulator's feedback is used.
+    pub carrier: Operator,
+}
+
+/// The AdLib instrument bank `SEX.IDF`: `u16 count`, then 96-byte records of
+/// a 42-byte NUL-padded name, a header word (percussive, voice), 13 modulator
+/// words and 13 carrier words, the 52-byte layout the driver's instrument
+/// table uses (`drv_10`, stride 0x34).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstrumentBank {
+    pub timbres: Vec<Timbre>,
+}
+
+impl InstrumentBank {
+    const RECORD: usize = 96;
+    const NAME: usize = 42;
+
+    pub fn parse(data: &[u8]) -> Result<Self, String> {
+        let count = usize::from(u16::from_le_bytes(
+            data.get(..2)
+                .ok_or("IDF too short")?
+                .try_into()
+                .map_err(|_| "IDF too short")?,
+        ));
+        let mut timbres = Vec::with_capacity(count);
+        for index in 0..count {
+            let start = 2 + index * Self::RECORD;
+            let record = data
+                .get(start..start + Self::RECORD)
+                .ok_or_else(|| format!("IDF record {index} truncated"))?;
+            let name_end = record[..Self::NAME]
+                .iter()
+                .position(|b| *b == 0)
+                .unwrap_or(Self::NAME);
+            let words: Vec<u16> = record[Self::NAME..]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect();
+            timbres.push(Timbre {
+                name: String::from_utf8_lossy(&record[..name_end]).to_string(),
+                percussive: record[Self::NAME] != 0,
+                voice: record[Self::NAME + 1],
+                modulator: Operator::from_words(&words[1..14]),
+                carrier: Operator::from_words(&words[14..27]),
+            });
+        }
+        Ok(Self { timbres })
+    }
+
+    pub fn load(path: impl AsRef<std::path::Path>) -> Result<Self, String> {
+        Self::parse(&std::fs::read(path).map_err(|e| e.to_string())?)
+    }
+
+    /// Instrument by `INS1` name, ignoring case.
+    #[must_use]
+    pub fn find(&self, name: &str) -> Option<&Timbre> {
+        self.timbres
+            .iter()
+            .find(|timbre| timbre.name.eq_ignore_ascii_case(name))
+    }
+}
+
+/// Carrier total level for a note volume `0..=127`, as the driver scales it
+/// (`FUN_0000_088c`): `0x3F - (vol * (0x3F - TL) * 2 + 0x7F) / 0xFE`.
+#[must_use]
+pub fn scaled_total_level(total_level: u8, volume: u8) -> u8 {
+    let level = i32::from(0x3f - (total_level & 0x3f));
+    let scaled = (i32::from(volume.min(127)) * level * 2 + 0x7f) / 0xfe;
+    (0x3f - scaled) as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use soe_res::ResFile;
+
+    #[test]
+    fn parses_instrument_bank() {
+        let Ok(bytes) = std::fs::read("../../game/SEX.IDF") else {
+            eprintln!("SKIP: SEX.IDF absent");
+            return;
+        };
+        let bank = InstrumentBank::parse(&bytes).unwrap();
+        let names: Vec<_> = bank.timbres.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "pclar", "TomDrum", "strings", "mclar", "clarinet", "horn", "tptvib", "Flute",
+                "VocFlute"
+            ]
+        );
+        let clarinet = bank.find("CLARINET").unwrap();
+        assert_eq!(
+            clarinet.modulator,
+            Operator {
+                ksl: 0,
+                multiple: 2,
+                feedback: 7,
+                attack: 2,
+                sustain_level: 0,
+                sustaining: true,
+                decay: 12,
+                release: 3,
+                total_level: 28,
+                tremolo: false,
+                vibrato: false,
+                ksr: true,
+                fm: true,
+            }
+        );
+        assert!(clarinet.modulator.sustaining);
+        assert_eq!(clarinet.carrier.attack, 2);
+        assert_eq!(clarinet.carrier.total_level, 0);
+        let drum = bank.find("tomdrum").unwrap();
+        assert!(drum.percussive);
+        assert_eq!(drum.voice, 6);
+    }
+
+    #[test]
+    fn driver_volume_scaling() {
+        assert_eq!(scaled_total_level(0, 127), 0);
+        assert_eq!(scaled_total_level(0, 0), 63);
+        assert_eq!(scaled_total_level(15, 127), 15);
+        assert_eq!(scaled_total_level(15, 64), 39);
+    }
 
     #[test]
     fn tied_notes_are_held_not_restruck() {

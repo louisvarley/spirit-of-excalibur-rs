@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use soe_engine::smus::Score;
+use soe_engine::smus::{InstrumentBank, Operator, Score, Timbre, scaled_total_level};
 
 struct Playback {
     samples: Vec<f32>,
@@ -43,6 +43,7 @@ pub struct AudioPlayer {
     shared: Arc<Mutex<Playback>>,
     sample_rate: u32,
     muted: Arc<AtomicBool>,
+    instruments: InstrumentBank,
 }
 
 impl AudioPlayer {
@@ -125,11 +126,19 @@ impl AudioPlayer {
             shared,
             sample_rate,
             muted: Arc::new(AtomicBool::new(false)),
+            instruments: InstrumentBank::default(),
         })
     }
 
+    /// Use the original instrument bank (`SEX.IDF`) for named instruments.
+    #[must_use]
+    pub fn with_instruments(mut self, instruments: InstrumentBank) -> Self {
+        self.instruments = instruments;
+        self
+    }
+
     pub fn play_score(&self, score: &Score) {
-        let samples = render_stereo(score, self.sample_rate);
+        let samples = render_stereo(score, &self.instruments, self.sample_rate);
         let mut playback = self
             .shared
             .lock()
@@ -161,6 +170,32 @@ fn note_to_fnum(tone: u8) -> (u16, u8) {
     }
 }
 
+/// OPL patch from an original `SEX.IDF` timbre, as the AdLib driver programs
+/// it: wave select 0, `additive` when the modulator's FM flag is clear.
+fn timbre_patch(timbre: &Timbre) -> oplon::ChannelPatch {
+    let op = |o: &Operator| oplon::OpPatch {
+        mul: o.multiple,
+        waveform: 0,
+        tl: o.total_level,
+        ksl: o.ksl,
+        ksr: o.ksr,
+        sustaining: o.sustaining,
+        attack: o.attack,
+        decay: o.decay,
+        sustain: o.sustain_level,
+        release: o.release,
+        am: o.tremolo,
+        vib: o.vibrato,
+    };
+    oplon::ChannelPatch {
+        modulator: op(&timbre.modulator),
+        carrier: op(&timbre.carrier),
+        feedback: timbre.modulator.feedback,
+        additive: !timbre.modulator.fm,
+    }
+}
+
+/// Fallback patches for instruments missing from the bank.
 fn patch_for(name: Option<&str>) -> oplon::ChannelPatch {
     use oplon::{ChannelPatch, OpPatch};
     let op = |mul, tl, attack, decay, sustain, release, waveform| OpPatch {
@@ -226,7 +261,7 @@ fn patch_for(name: Option<&str>) -> oplon::ChannelPatch {
     }
 }
 
-fn render_stereo(score: &Score, sample_rate: u32) -> Vec<f32> {
+fn render_stereo(score: &Score, bank: &InstrumentBank, sample_rate: u32) -> Vec<f32> {
     use oplon::Opl2;
     let spq = score.seconds_per_quarter();
     let mut notes: Vec<_> = score
@@ -281,21 +316,23 @@ fn render_stereo(score: &Score, sample_rate: u32) -> Vec<f32> {
                         .min_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
                         .map_or(0, |(index, _)| index)
                 });
-            let patch = patch_for(
-                score
-                    .instruments
-                    .get(usize::from(instrument))
-                    .map(String::as_str),
-            );
+            let name = score
+                .instruments
+                .get(usize::from(instrument))
+                .map(String::as_str);
+            let original = name.and_then(|name| bank.find(name));
+            let patch = original.map_or_else(|| patch_for(name), timbre_patch);
             opl.key_off(channel);
             opl.set_patch(channel, &patch);
             let (fnum, block) = note_to_fnum(tone);
             opl.set_frequency(channel, fnum, block);
-            let attenuation = (127 - i32::from(velocity)) / 2;
-            opl.set_carrier_tl(
-                channel,
-                (i32::from(patch.carrier.tl) + attenuation).clamp(0, 63) as u8,
-            );
+            let tl = if original.is_some() {
+                scaled_total_level(patch.carrier.tl, velocity)
+            } else {
+                let attenuation = (127 - i32::from(velocity)) / 2;
+                (i32::from(patch.carrier.tl) + attenuation).clamp(0, 63) as u8
+            };
+            opl.set_carrier_tl(channel, tl);
             opl.key_on(channel);
             channel_end[channel] = if end <= start { start + 0.05 } else { end };
             next_note += 1;

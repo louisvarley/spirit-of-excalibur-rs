@@ -1278,7 +1278,12 @@ fn main() -> Result<()> {
     }
 
     let music = MusicLibrary::load(game_dir.join("MUSIC.RES")).ok();
-    let audio = audio::AudioPlayer::new();
+    let audio = audio::AudioPlayer::new().map(|player| {
+        // The original's AdLib instrument bank; missing file = built-in patches.
+        player.with_instruments(
+            soe_engine::smus::InstrumentBank::load(game_dir.join("SEX.IDF")).unwrap_or_default(),
+        )
+    });
     let song = start_events.iter().find_map(|event| match event {
         RuntimeEvent::Music(name) => music.as_ref().and_then(|m| m.find(name)),
         _ => None,

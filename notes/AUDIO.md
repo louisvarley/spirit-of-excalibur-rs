@@ -33,15 +33,28 @@ playable and silent.
 - The render cap of 120 s that would cut and restart longer songs is now
   600 s.
 
+## Instruments (`SEX.IDF`)
+
+`game/SEX.IDF` is the AdLib instrument bank. Layout: `u16 count` (9), then
+96-byte records: 42-byte NUL-padded name, header word (byte 0 percussive,
+byte 1 AdLib percussion voice; only `TomDrum` = 1/6), 13 modulator words,
+13 carrier words. Operator word order is the AdLib driver's slot order
+(`ADLIB.DVR` `FUN_0000_077b`): KSL, MULT, FB, AR, SL, EG, DR, RR, TL, AM,
+VIB, KSR, FM. The instrument loader (`drv_10`) copies the 26 words into a
+0x34-byte table and passes wave select 0. Register `0xC0` =
+`FB << 1 | (FM == 0)` (`FUN_0000_090e`), so FM = 1 is FM synthesis. The
+carrier's FB word is junk (`0xE206`/`0xFF`) and unused. Note volume
+scales TL as `0x3F - (vol * (0x3F - TL) * 2 + 0x7F) / 0xFE`
+(`FUN_0000_088c`). All 9 instruments the songs name are in the bank;
+`soe-app` plays them with `soe_engine::smus::InstrumentBank`.
+`TomDrum` is played melodically; AdLib rhythm mode is not modelled.
+
 ## Still open
 
 - Per-scene song selection (map/title/combat/victory/defeat cues).
-- **Instruments:** `game/SEX.IDF` (866 bytes) is the instrument bank:
-  `u16 count = 9`, then 96-byte records (name, then OPL operator
-  parameters as words) for `pclar`, `TomDrum`, `strings`, `mclar`,
-  `clarinet`, `horn`, `tptvib`, `Flute`, `VocFlute`, the names the `INS1`
-  chunks use. `soe-app` still uses hand-made `oplon` patches. Decode the
-  record layout (AdLib `.INS`-like operator fields) and load it.
+- 8 of 125 tracks (in `stnheng`, `village1`, `city1`, `city2`) play notes
+  before any instrument event; the port defaults to register = track
+  index. The original default is unverified.
 - The SMUS sequencer is not located: segment `1237` is the generic resource
   loader that `FUN_1316_187b` uses, so the tick-level sequencer timing is
   unverified (likely in `ADLIB.DVR` or the timer ISR).
